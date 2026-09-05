@@ -45,6 +45,7 @@ export default function Dashboard({ profile }: Props) {
   }, [profile.role]);
 
   const byMonth = sales.reduce<Record<string, MonthTotal>>((acc, s) => {
+    if (!s.date_vente) return acc; // ligne incomplète (backlog), pas encore de date
     const mois = s.date_vente.slice(0, 7);
     if (!acc[mois]) acc[mois] = { mois, ca: 0, comm: 0, nb: 0 };
     acc[mois].ca += s.ca_ttc || 0;
