@@ -127,15 +127,35 @@ function toNombre(brut: string): number | null {
 }
 
 function parseMontantDansChunk(chunk: string): number | null {
-  const re = /(\d[\d]{0,9}(?:[.,]\d{2,3})?)[ \t]*[x×][oO0Ff][Ff]?\b/i;
+  // Le nombre et son suffixe "xOF" sont généralement séparés par de longs
+  // espaces d'alignement (colonnes en texte fixe), parfois par un unique
+  // saut de ligne quand la mise en page redécoupe la valeur sur la ligne
+  // suivante. On tolère les deux, mais jamais plus d'un retour à la ligne.
+  const re = /(\d[\d]{0,9}(?:[.,]\d{2,3})?)[ \t]*\n?[ \t]*[x×][oO0Ff][Ff]?\b/i;
   const m = chunk.match(re);
   return m ? toNombre(m[1]) : null;
 }
 
 function parseMontantTotalFooter(footerSegment: string): number | null {
-  const re = /Montant\s+total(?!\s*net)[^\n]{0,80}?(\d[\d]{0,9}(?:[.,]\d{2,3})?)[ \t]*[x×][oO0Ff][Ff]?\b/i;
-  const m = footerSegment.match(re);
-  return m ? toNombre(m[1]) : null;
+  // Le pied de facture répète le même montant 2 à 3 fois (total net, total
+  // TTC, montant donné) — sauf les lignes de TVA/droits à 0,00, jamais
+  // confondues avec le vrai total grâce au seuil minimal.
+  const re = /(\d[\d]{0,9}(?:[.,]\d{2,3})?)[ \t]*\n?[ \t]*[x×][oO0Ff][Ff]?\b/gi;
+  const counts = new Map<number, number>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(footerSegment)) !== null) {
+    const num = toNombre(m[1]);
+    if (num !== null && num >= 100) counts.set(num, (counts.get(num) || 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  let best: number | null = null, bestCount = 0;
+  for (const [val, count] of counts) {
+    if (count > bestCount || (count === bestCount && val > (best ?? 0))) {
+      best = val;
+      bestCount = count;
+    }
+  }
+  return best;
 }
 
 // Découpe le corps d'une facture (après le marqueur) en items individuels,
@@ -205,14 +225,26 @@ export function parseTexteFactures(texte: string): LigneExtraiteOCI[] {
   // qu'une occurrence par triplet (facture, offre, montant) — ce qui
   // préserve les vraies lignes multiples d'une même facture (offres ou
   // montants différents) tout en éliminant les répétitions exactes.
-  const vus = new Set<string>();
-  const dedup: LigneExtraiteOCI[] = [];
+  // Déduplication : une même facture peut apparaître plusieurs fois dans le
+  // texte collé (réimpressions), donnant lieu à des lignes portant la même
+  // clé (facture + offre + montant). Les deux occurrences ne sont pas
+  // forcément aussi complètes l'une que l'autre — le reçu "à chaud" saute
+  // parfois l'en-tête (date/opérateur), tandis que la réimpression groupée
+  // plus loin dans le document le restitue. On garde systématiquement la
+  // version la plus complète, jamais simplement la première rencontrée.
+  const parCle = new Map<string, LigneExtraiteOCI>();
   for (const l of brut) {
     const cle = `${l.nFacture}|${l.offre}|${l.montant}`;
-    if (vus.has(cle)) continue;
-    vus.add(cle);
-    dedup.push(l);
+    const existante = parCle.get(cle);
+    if (!existante) {
+      parCle.set(cle, l);
+      continue;
+    }
+    const score = (x: LigneExtraiteOCI) => [x.date, x.agentNom, x.montant].filter(v => v !== null).length;
+    if (score(l) > score(existante)) {
+      parCle.set(cle, l);
+    }
   }
 
-  return dedup;
+  return [...parCle.values()];
 }
