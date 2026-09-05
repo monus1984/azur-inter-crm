@@ -20,6 +20,7 @@ export interface Profile {
   login_oci: string | null;
   email_pro: string | null;
   actif: boolean;
+  agence_courante?: string;
 }
 
 export interface Sale {
@@ -42,12 +43,13 @@ export interface Sale {
   cree_le: string;
 }
 
-export interface Profile {
-  id: string;
-  nom: string;
-  role: RoleUtilisateur;
-  login_oci: string | null;
-  email_pro: string | null;
-  actif: boolean;
-  agence_courante?: string;
+export interface MaPerformance {
+  profile_id: string;
+  mois: string;
+  univers: UniversOffre;
+  nombre_ventes: number;
+  ca_ttc: number;
+  points: number;
+  prime_due: number;
+  commission_oci: number;
 }

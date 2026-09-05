@@ -33,7 +33,6 @@ function Shell({
   profile: { nom: string; role: string };
 }) {
   const isAdmin = profile.role === "admin";
-  const isDG = profile.role === "dg";
   const isCommercial = profile.role === "commercial";
 
   return (

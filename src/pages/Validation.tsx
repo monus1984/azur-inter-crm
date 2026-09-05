@@ -26,20 +26,41 @@ export default function Validation({ profile }: Props) {
 
   async function load() {
     setLoading(true);
-    const { data } = await supabase
+    const { data: salesData, error: salesErr } = await supabase
       .from("sales")
-      .select("*, profiles(nom)")
+      .select("*")
       .eq("statut", "saisie")
       .order("cree_le", { ascending: true });
 
-    if (data) {
-      setSales(
-        data.map((s: Sale & { profiles?: { nom: string } }) => ({
-          ...s,
-          agent_nom: s.profiles?.nom ?? "—",
-        }))
-      );
+    if (salesErr) {
+      console.error("Erreur chargement ventes:", salesErr.message);
+      setSales([]);
+      setLoading(false);
+      return;
     }
+
+    if (!salesData || salesData.length === 0) {
+      setSales([]);
+      setLoading(false);
+      return;
+    }
+
+    // Requête séparée sur profiles : évite les soucis de jointure PostgREST
+    // et de policies RLS croisées entre les deux tables.
+    const profileIds = [...new Set(salesData.map(s => s.profile_id))];
+    const { data: profilesData } = await supabase
+      .from("profiles")
+      .select("id, nom")
+      .in("id", profileIds);
+
+    const nomById = new Map((profilesData ?? []).map(p => [p.id, p.nom]));
+
+    setSales(
+      salesData.map((s: Sale) => ({
+        ...s,
+        agent_nom: nomById.get(s.profile_id) ?? "—",
+      }))
+    );
     setLoading(false);
   }
 
