@@ -25,8 +25,12 @@ export default function Dashboard({ profile }: Props) {
 
   useEffect(() => {
     setLoading(true);
+    // Le superviseur n'a aucune politique de lecture sur la table sales —
+    // uniquement sur la vue sales_superviseur, qui masque la prime. Un
+    // commercial ou l'admin/DG lisent la table directement, filtrée par RLS.
+    const source = profile.role === "superviseur" ? "sales_superviseur" : "sales";
     supabase
-      .from("sales")
+      .from(source)
       .select("*")
       .eq("est_avoir", false)
       .order("date_vente", { ascending: false })
@@ -38,7 +42,7 @@ export default function Dashboard({ profile }: Props) {
         }
         setLoading(false);
       });
-  }, []);
+  }, [profile.role]);
 
   const byMonth = sales.reduce<Record<string, MonthTotal>>((acc, s) => {
     const mois = s.date_vente.slice(0, 7);
@@ -72,6 +76,8 @@ export default function Dashboard({ profile }: Props) {
         <p className="text-sm text-slate-500">
           {profile.role === "commercial"
             ? "Vos ventes et commissions"
+            : profile.role === "superviseur"
+            ? "Performance de l'équipe — CA et commission OCI"
             : "Vue d'ensemble des ventes"}
         </p>
       </div>

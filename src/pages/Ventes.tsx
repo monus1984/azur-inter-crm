@@ -1,16 +1,21 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
-import type { Sale } from "../types/database";
+import type { Profile, Sale } from "../types/database";
 
-// Lecture seule pour le Lot 1. L'écriture (saisie commerciale, import PDF)
-// arrive au Lot 2, avec les statuts de validation.
-export default function Ventes() {
+interface Props {
+  profile: Profile;
+}
+
+export default function Ventes({ profile }: Props) {
   const [sales, setSales] = useState<Sale[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Le superviseur n'a pas de politique de lecture sur la table sales
+    // directement — seulement sur sales_superviseur, qui masque la prime.
+    const source = profile.role === "superviseur" ? "sales_superviseur" : "sales";
     supabase
-      .from("sales")
+      .from(source)
       .select("*")
       .order("date_vente", { ascending: false })
       .limit(200)
@@ -18,7 +23,7 @@ export default function Ventes() {
         setSales((data ?? []) as Sale[]);
         setLoading(false);
       });
-  }, []);
+  }, [profile.role]);
 
   if (loading) {
     return <div className="p-8 text-slate-500 text-sm">Chargement...</div>;
@@ -42,7 +47,7 @@ export default function Ventes() {
           <tbody>
             {sales.map((s) => (
               <tr key={s.id} className="border-b border-slate-100">
-                <td className="py-2 pr-4 text-slate-700">{s.date_vente}</td>
+                <td className="py-2 pr-4 text-slate-700">{s.date_vente ?? "—"}</td>
                 <td className="py-2 pr-4 text-slate-700">{s.agence}</td>
                 <td className="py-2 pr-4 text-slate-700">{s.offre}</td>
                 <td className="py-2 pr-4 text-slate-700">

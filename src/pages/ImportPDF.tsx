@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import { supabase } from "../lib/supabase";
 import { parseTexteFactures, type LigneExtraiteOCI } from "../lib/parseFacturesOCI";
 import { usePersistentState } from "../lib/usePersistentState";
-import type { Profile, UniversOffre } from "../types/database";
+import { deviserUnivers } from "../lib/univers";
+import type { Profile } from "../types/database";
 
 interface Props {
   profile: Profile;
@@ -15,14 +16,6 @@ interface LigneRevue extends LigneExtraiteOCI {
 }
 
 type FiltreAffichage = "toutes" | "a_verifier";
-
-function deviserUnivers(offre: string): UniversOffre {
-  const l = offre.toLowerCase();
-  if (l.includes("mix") || l.includes("community") || l.includes("sms")) return "MOBILE";
-  if (l.includes("topup") || l.includes("flybox") || l.includes("easybox") || l.includes("fibre")) return "INTERNET";
-  if (l.includes("office") || l.includes("ict")) return "ICT";
-  return "AUTRES";
-}
 
 function estAVerifier(l: LigneRevue): boolean {
   return l.confiance === "faible" || !l.profileId || l.dejaEnBase;
@@ -41,6 +34,7 @@ export default function ImportPDF({ profile }: Props) {
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importCount, setImportCount] = useState(0);
+  const [importBacklog, setImportBacklog] = useState(0);
 
   useEffect(() => {
     supabase.from("profiles").select("id, nom").then(({ data }) => {
@@ -116,47 +110,43 @@ export default function ImportPDF({ profile }: Props) {
     const selection = lignes.filter(l => l.selected);
     if (selection.length === 0) { setError("Sélectionnez au moins une ligne."); return; }
 
-    const sansAgent = selection.filter(l => !l.profileId);
-    if (sansAgent.length > 0) {
-      setError(
-        `${sansAgent.length} ligne(s) sélectionnée(s) n'ont pas d'agent identifié. ` +
-        `Désélectionnez-les ou complétez le nom avant d'importer.`
-      );
-      return;
-    }
-    if (selection.some(l => !l.date || l.montant === null)) {
-      setError("Certaines lignes sélectionnées n'ont pas de date ou de montant valide.");
-      return;
-    }
-
     setLoading(true);
     setError(null);
 
-    const { error: err } = await supabase.from("sales").insert(
-      selection.map(l => ({
-        profile_id: l.profileId,
-        date_vente: l.date,
+    // Une ligne complète (agent + date + montant) part directement en
+    // "saisie" pour la validation admin habituelle. Une ligne incomplète
+    // part en backlog ("incomplete") : elle n'empêche plus l'import des
+    // lignes propres, et sera complétée par le superviseur.
+    const rows = selection.map(l => {
+      const complete = !!l.profileId && !!l.date && l.montant !== null;
+      return {
+        profile_id: complete ? l.profileId : null,
+        date_vente: l.date, // peut être null si incomplet, autorisé en base
         agence: l.agence || "—",
         univers: deviserUnivers(l.offre),
         offre: l.offre,
         client: null,
         quantite: 1,
-        prix_unitaire: l.montant,
-        ca_ttc: l.montant,
+        prix_unitaire: l.montant ?? 0,
+        ca_ttc: l.montant ?? 0,
         commission_oci: 0,
         points: 0,
         prime: 0,
         n_facture: l.nFacture,
-        statut: "saisie",
+        statut: complete ? "saisie" : "incomplete",
         est_avoir: l.estAvoir,
         cree_par: profile.id,
-      }))
-    );
+      };
+    });
+
+    const { error: err } = await supabase.from("sales").insert(rows);
 
     if (err) {
       setError("Erreur lors de l'import : " + err.message);
     } else {
+      const nbIncomplet = rows.filter(r => r.statut === "incomplete").length;
       setImportCount(selection.length);
+      setImportBacklog(nbIncomplet);
       setStep("done");
       setTexteCollee("");
       setLignes([]);
@@ -183,10 +173,18 @@ export default function ImportPDF({ profile }: Props) {
     return (
       <div className="p-8">
         <h1 className="text-xl font-semibold text-slate-900 mb-4">Import terminé</h1>
-        <p className="text-sm text-slate-600 mb-4">
-          {importCount} vente{importCount > 1 ? "s" : ""} enregistrée{importCount > 1 ? "s" : ""}
-          {" "}avec le statut "saisie", en attente de validation.
+        <p className="text-sm text-slate-600 mb-2">
+          {importCount} vente{importCount > 1 ? "s" : ""} enregistrée{importCount > 1 ? "s" : ""}.
         </p>
+        {importBacklog > 0 ? (
+          <p className="text-sm text-amber-700 mb-4">
+            Dont {importBacklog} ligne{importBacklog > 1 ? "s" : ""} incomplète{importBacklog > 1 ? "s" : ""}
+            {" "}envoyée{importBacklog > 1 ? "s" : ""} dans le backlog — à compléter par le superviseur
+            avant validation.
+          </p>
+        ) : (
+          <p className="text-sm text-slate-600 mb-4">Toutes les lignes sont en attente de validation.</p>
+        )}
         <button onClick={nouvelImport} className="text-sm text-slate-600 underline">
           Importer un autre lot
         </button>
@@ -208,6 +206,8 @@ export default function ImportPDF({ profile }: Props) {
         <p className="text-sm text-slate-500 mb-4">
           {lignes.length} ligne{lignes.length > 1 ? "s" : ""} détectée{lignes.length > 1 ? "s" : ""},
           {" "}dont {nbAVerifier} à vérifier (agent manquant, confiance faible, ou déjà en base).
+          Une ligne sans agent ou sans date part quand même en import, dans le
+          backlog du superviseur, plutôt que de bloquer les autres lignes.
         </p>
 
         <div className="flex items-center justify-between mb-4">

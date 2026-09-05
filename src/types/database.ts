@@ -1,12 +1,13 @@
 // Types alignés sur schema_lot1.sql.
 // Toute modification du schéma doit se refléter ici.
 
-export type RoleUtilisateur = "admin" | "dg" | "commercial" | "oci";
+export type RoleUtilisateur = "admin" | "dg" | "commercial" | "oci" | "superviseur";
 
 export type UniversOffre = "INTERNET" | "MOBILE" | "FIXE" | "ICT" | "AUTRES";
 
 export type StatutVente =
   | "saisie"
+  | "incomplete"
   | "en_attente_oci"
   | "validee"
   | "annulee"
@@ -25,8 +26,8 @@ export interface Profile {
 
 export interface Sale {
   id: number;
-  profile_id: string;
-  date_vente: string; // ISO date
+  profile_id: string | null;
+  date_vente: string | null;
   agence: string;
   univers: UniversOffre;
   offre: string;

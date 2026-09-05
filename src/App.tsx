@@ -7,6 +7,8 @@ import Ventes from "./pages/Ventes";
 import SaisieVente from "./pages/SaisieVente";
 import Validation from "./pages/Validation";
 import ImportPDF from "./pages/ImportPDF";
+import Backlog from "./pages/Backlog";
+import type { Profile } from "./types/database";
 
 function NavItem({ to, label }: { to: string; label: string }) {
   return (
@@ -25,15 +27,10 @@ function NavItem({ to, label }: { to: string; label: string }) {
   );
 }
 
-function Shell({
-  children,
-  profile,
-}: {
-  children: React.ReactNode;
-  profile: { nom: string; role: string };
-}) {
+function Shell({ children, profile }: { children: React.ReactNode; profile: Profile }) {
   const isAdmin = profile.role === "admin";
   const isCommercial = profile.role === "commercial";
+  const isSuperviseur = profile.role === "superviseur";
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -43,20 +40,13 @@ function Shell({
             <span className="font-semibold text-slate-900 mr-4">Azur Inter</span>
             <NavItem to="/" label="Dashboard" />
             <NavItem to="/ventes" label="Ventes" />
-            {(isCommercial || isAdmin) && (
-              <NavItem to="/saisie" label="+ Vente" />
-            )}
-            {(isCommercial || isAdmin) && (
-              <NavItem to="/import-pdf" label="Import PDF" />
-            )}
-            {isAdmin && (
-              <NavItem to="/validation" label="Validation" />
-            )}
+            {(isCommercial || isAdmin) && <NavItem to="/saisie" label="+ Vente" />}
+            {(isCommercial || isAdmin) && <NavItem to="/import-pdf" label="Import PDF" />}
+            {isAdmin && <NavItem to="/validation" label="Validation" />}
+            {(isAdmin || isSuperviseur) && <NavItem to="/backlog" label="Backlog" />}
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-slate-400 uppercase tracking-wide">
-              {profile.role}
-            </span>
+            <span className="text-xs text-slate-400 uppercase tracking-wide">{profile.role}</span>
             <span className="text-sm text-slate-600">{profile.nom}</span>
             <button
               onClick={() => supabase.auth.signOut()}
@@ -93,34 +83,35 @@ export default function App() {
     );
   }
 
+  // Le superviseur ne saisit et n'importe jamais de vente : ces deux routes
+  // lui restent fermées, tout comme au DG et à OCI. Il ne fait que consulter
+  // et compléter le backlog.
+  const peutSaisirOuImporter = profile.role === "admin" || profile.role === "commercial";
+
   return (
     <BrowserRouter>
       <Shell profile={profile}>
         <Routes>
           <Route path="/" element={<Dashboard profile={profile} />} />
-          <Route path="/ventes" element={<Ventes />} />
+          <Route path="/ventes" element={<Ventes profile={profile} />} />
           <Route
             path="/saisie"
-            element={
-              profile.role === "dg" || profile.role === "oci"
-                ? <Navigate to="/" replace />
-                : <SaisieVente profile={profile} />
-            }
+            element={!peutSaisirOuImporter ? <Navigate to="/" replace /> : <SaisieVente profile={profile} />}
           />
           <Route
             path="/import-pdf"
-            element={
-              profile.role === "dg" || profile.role === "oci"
-                ? <Navigate to="/" replace />
-                : <ImportPDF profile={profile} />
-            }
+            element={!peutSaisirOuImporter ? <Navigate to="/" replace /> : <ImportPDF profile={profile} />}
           />
           <Route
             path="/validation"
+            element={profile.role !== "admin" ? <Navigate to="/" replace /> : <Validation profile={profile} />}
+          />
+          <Route
+            path="/backlog"
             element={
-              profile.role !== "admin"
+              profile.role !== "admin" && profile.role !== "superviseur"
                 ? <Navigate to="/" replace />
-                : <Validation profile={profile} />
+                : <Backlog profile={profile} />
             }
           />
           <Route path="*" element={<Navigate to="/" replace />} />
