@@ -1,116 +1,119 @@
-import { useState, useRef } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "../lib/supabase";
-import type { Profile } from "../types/database";
+import { parseTexteFactures, type LigneExtraiteOCI } from "../lib/parseFacturesOCI";
+import type { Profile, UniversOffre } from "../types/database";
 
 interface Props {
   profile: Profile;
 }
 
-interface LigneExtraite {
-  offre: string;
-  client: string;
-  ca_ttc: number;
-  n_facture: string;
+interface LigneRevue extends LigneExtraiteOCI {
   selected: boolean;
+  profileId: string | null; // résolu depuis agentNom via la table profiles
 }
 
-// Extraction basique depuis le texte du PDF.
-// Le parsing réel via Claude API peut être ajouté ici (Lot 2+).
-function extraireLignes(text: string, nFacture: string): LigneExtraite[] {
-  const lignes: LigneExtraite[] = [];
-  const lines = text.split("\n").filter(l => l.trim());
-
-  // Pattern simple : cherche des montants en F CFA ou des lignes avec prix
-  const montantPattern = /(\d[\d\s]{2,})\s*(F|CFA|FCFA)?/;
-
-  lines.forEach(line => {
-    const match = line.match(montantPattern);
-    if (match) {
-      const montant = parseInt(match[1].replace(/\s/g, ""));
-      if (montant >= 1000 && montant <= 10000000) {
-        lignes.push({
-          offre: line.slice(0, 60).trim(),
-          client: "",
-          ca_ttc: montant,
-          n_facture: nFacture,
-          selected: true,
-        });
-      }
-    }
-  });
-
-  return lignes.slice(0, 20); // max 20 lignes par PDF
+function deviserUnivers(offre: string): UniversOffre {
+  const l = offre.toLowerCase();
+  if (l.includes("mix") || l.includes("community") || l.includes("sms")) return "MOBILE";
+  if (l.includes("topup") || l.includes("flybox") || l.includes("easybox") || l.includes("fibre")) return "INTERNET";
+  if (l.includes("office") || l.includes("ict")) return "ICT";
+  return "AUTRES";
 }
 
 export default function ImportPDF({ profile }: Props) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [nFacture, setNFacture] = useState("");
-  const [agence, setAgence] = useState("");
-  const [lignes, setLignes] = useState<LigneExtraite[]>([]);
-  const [step, setStep] = useState<"upload" | "review" | "done">("upload");
+  const [texteCollee, setTexteCollee] = useState("");
+  const [lignes, setLignes] = useState<LigneRevue[]>([]);
+  const [profilesByNom, setProfilesByNom] = useState<Map<string, string>>(new Map());
+  const [step, setStep] = useState<"saisie" | "review" | "done">("saisie");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [importCount, setImportCount] = useState(0);
 
-  async function handleFile(file: File) {
-    if (!nFacture) { setError("Saisissez d'abord le numéro de facture."); return; }
-    setError(null);
-    setLoading(true);
-
-    try {
-      // Upload vers Supabase Storage pour archivage
-      const path = `factures/${profile.id}/${nFacture}_${Date.now()}.pdf`;
-      await supabase.storage.from("documents").upload(path, file, {
-        contentType: "application/pdf",
-        upsert: false,
-      });
-
-      // Lecture du texte (basique via FileReader)
-      const text = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.readAsText(file, "latin1");
-      });
-
-      const extraites = extraireLignes(text, nFacture);
-
-      if (extraites.length === 0) {
-        setError(
-          "Aucune ligne détectée automatiquement. Le PDF est peut-être scanné (image). " +
-          "Essayez la saisie manuelle ou contactez l'admin."
-        );
-      } else {
-        setLignes(extraites);
-        setStep("review");
+  // Charge la table des profils une fois, pour résoudre nom -> profile_id
+  // lors de l'extraction. Nécessaire pour attribuer chaque ligne au bon
+  // commercial plutôt qu'à l'importateur.
+  useEffect(() => {
+    supabase.from("profiles").select("id, nom").then(({ data }) => {
+      if (data) {
+        const map = new Map<string, string>();
+        data.forEach((p: { id: string; nom: string }) => map.set(p.nom, p.id));
+        setProfilesByNom(map);
       }
-    } catch (e) {
-      setError("Erreur lors de la lecture du fichier.");
-      console.error(e);
+    });
+  }, []);
+
+  function handleExtraire() {
+    setError(null);
+    if (texteCollee.trim().length < 50) {
+      setError("Le texte semble trop court. Collez le contenu complet copié depuis Word.");
+      return;
     }
-    setLoading(false);
+
+    const extraites = parseTexteFactures(texteCollee);
+
+    if (extraites.length === 0) {
+      setError(
+        "Aucune facture détectée. Vérifiez que le texte contient bien des lignes " +
+        "\"N°recu-facture:OCI-...\" — c'est le repère utilisé pour découper les reçus."
+      );
+      return;
+    }
+
+    const revues: LigneRevue[] = extraites.map(l => ({
+      ...l,
+      selected: l.confiance !== 'faible', // pré-coché sauf si peu fiable
+      profileId: l.agentNom ? profilesByNom.get(l.agentNom) ?? null : null,
+    }));
+
+    setLignes(revues);
+    setStep("review");
+  }
+
+  function toggleLigne(i: number) {
+    setLignes(prev => prev.map((l, j) => j === i ? { ...l, selected: !l.selected } : l));
+  }
+
+  function updateLigne(i: number, field: keyof LigneRevue, value: string | number | boolean) {
+    setLignes(prev => prev.map((l, j) => j === i ? { ...l, [field]: value } : l));
   }
 
   async function handleImport() {
-    const selected = lignes.filter(l => l.selected);
-    if (selected.length === 0) { setError("Sélectionnez au moins une ligne."); return; }
+    const selection = lignes.filter(l => l.selected);
+    if (selection.length === 0) { setError("Sélectionnez au moins une ligne."); return; }
+
+    const sansAgent = selection.filter(l => !l.profileId);
+    if (sansAgent.length > 0) {
+      setError(
+        `${sansAgent.length} ligne(s) sélectionnée(s) n'ont pas d'agent identifié. ` +
+        `Désélectionnez-les ou complétez le nom avant d'importer.`
+      );
+      return;
+    }
+    if (selection.some(l => !l.date || l.montant === null)) {
+      setError("Certaines lignes sélectionnées n'ont pas de date ou de montant valide.");
+      return;
+    }
 
     setLoading(true);
+    setError(null);
+
     const { error: err } = await supabase.from("sales").insert(
-      selected.map(l => ({
-        profile_id: profile.id,
-        date_vente: new Date().toISOString().slice(0, 10),
-        agence: agence || "—",
-        univers: "AUTRES",
+      selection.map(l => ({
+        profile_id: l.profileId,
+        date_vente: l.date,
+        agence: l.agence || "—",
+        univers: deviserUnivers(l.offre),
         offre: l.offre,
-        client: l.client || null,
+        client: null,
         quantite: 1,
-        prix_unitaire: l.ca_ttc,
-        ca_ttc: l.ca_ttc,
+        prix_unitaire: l.montant,
+        ca_ttc: l.montant,
         commission_oci: 0,
         points: 0,
         prime: 0,
-        n_facture: l.n_facture || null,
+        n_facture: l.nFacture,
         statut: "saisie",
-        est_avoir: false,
+        est_avoir: l.estAvoir,
         cree_par: profile.id,
       }))
     );
@@ -118,50 +121,60 @@ export default function ImportPDF({ profile }: Props) {
     if (err) {
       setError("Erreur lors de l'import : " + err.message);
     } else {
+      setImportCount(selection.length);
       setStep("done");
     }
     setLoading(false);
   }
 
-  function toggleLigne(i: number) {
-    setLignes(prev => prev.map((l, j) => j === i ? { ...l, selected: !l.selected } : l));
-  }
-
-  function updateLigne(i: number, field: keyof LigneExtraite, value: string | number) {
-    setLignes(prev => prev.map((l, j) => j === i ? { ...l, [field]: value } : l));
-  }
+  const confianceBadge = (c: LigneExtraiteOCI['confiance']) => {
+    const styles = {
+      haute: "bg-green-100 text-green-700",
+      moyenne: "bg-amber-100 text-amber-700",
+      faible: "bg-red-100 text-red-700",
+    };
+    return <span className={`text-xs px-2 py-0.5 rounded-full ${styles[c]}`}>{c}</span>;
+  };
 
   if (step === "done") {
     return (
       <div className="p-8">
         <h1 className="text-xl font-semibold text-slate-900 mb-4">Import terminé</h1>
         <p className="text-sm text-slate-600 mb-4">
-          Les ventes ont été enregistrées avec le statut "saisie" et sont en attente de validation.
+          {importCount} vente{importCount > 1 ? "s" : ""} enregistrée{importCount > 1 ? "s" : ""}
+          {" "}avec le statut "saisie", en attente de validation.
         </p>
         <button
-          onClick={() => { setStep("upload"); setLignes([]); setNFacture(""); }}
+          onClick={() => { setStep("saisie"); setTexteCollee(""); setLignes([]); }}
           className="text-sm text-slate-600 underline"
         >
-          Importer une autre facture
+          Importer un autre lot
         </button>
       </div>
     );
   }
 
   if (step === "review") {
+    const nbSansAgent = lignes.filter(l => l.selected && !l.profileId).length;
     return (
       <div className="p-8">
         <h1 className="text-xl font-semibold text-slate-900 mb-1">Vérification avant import</h1>
-        <p className="text-sm text-slate-500 mb-6">
-          {lignes.length} ligne{lignes.length > 1 ? "s" : ""} détectée{lignes.length > 1 ? "s" : ""}.
-          Cochez celles à importer et corrigez si nécessaire.
+        <p className="text-sm text-slate-500 mb-4">
+          {lignes.length} facture{lignes.length > 1 ? "s" : ""} détectée{lignes.length > 1 ? "s" : ""}.
+          Corrigez les champs si besoin avant d'importer.
         </p>
 
-        <div className="space-y-3 mb-6">
+        {nbSansAgent > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-md px-4 py-2 text-sm text-amber-800 mb-4">
+            {nbSansAgent} ligne(s) sélectionnée(s) n'ont pas d'agent reconnu automatiquement.
+          </div>
+        )}
+
+        <div className="space-y-2 mb-6 max-h-[60vh] overflow-y-auto">
           {lignes.map((l, i) => (
             <div
               key={i}
-              className={`border rounded-lg p-3 ${l.selected ? "border-slate-300" : "border-slate-100 opacity-50"}`}
+              className={`border rounded-lg p-3 text-sm ${l.selected ? "border-slate-300" : "border-slate-100 opacity-50"}`}
             >
               <div className="flex items-start gap-3">
                 <input
@@ -170,28 +183,41 @@ export default function ImportPDF({ profile }: Props) {
                   onChange={() => toggleLigne(i)}
                   className="mt-1"
                 />
-                <div className="flex-1 space-y-2">
+                <div className="flex-1 grid grid-cols-6 gap-2 items-center">
+                  <span className="col-span-1 text-xs text-slate-500 truncate" title={l.nFacture}>
+                    {l.nFacture}
+                  </span>
+                  <input
+                    type="date"
+                    value={l.date ?? ""}
+                    onChange={e => updateLigne(i, "date", e.target.value)}
+                    className="col-span-1 border border-slate-200 rounded px-1 py-1 text-xs"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Agent non reconnu"
+                    value={l.agentNom ?? ""}
+                    onChange={e => {
+                      const nom = e.target.value;
+                      updateLigne(i, "agentNom", nom);
+                      updateLigne(i, "profileId", profilesByNom.get(nom) ?? "");
+                    }}
+                    className={`col-span-1 border rounded px-1 py-1 text-xs ${!l.profileId ? "border-red-300 bg-red-50" : "border-slate-200"}`}
+                  />
                   <input
                     type="text"
                     value={l.offre}
                     onChange={e => updateLigne(i, "offre", e.target.value)}
-                    className="w-full text-sm border-b border-slate-200 focus:outline-none"
+                    className="col-span-1 border border-slate-200 rounded px-1 py-1 text-xs"
                   />
-                  <div className="flex gap-3">
-                    <input
-                      type="text"
-                      placeholder="Client"
-                      value={l.client}
-                      onChange={e => updateLigne(i, "client", e.target.value)}
-                      className="flex-1 text-xs border border-slate-200 rounded px-2 py-1"
-                    />
-                    <input
-                      type="number"
-                      value={l.ca_ttc}
-                      onChange={e => updateLigne(i, "ca_ttc", parseFloat(e.target.value))}
-                      className="w-32 text-xs border border-slate-200 rounded px-2 py-1 text-right"
-                    />
-                    <span className="text-xs text-slate-500 self-center">F TTC</span>
+                  <input
+                    type="number"
+                    value={l.montant ?? ""}
+                    onChange={e => updateLigne(i, "montant", parseFloat(e.target.value))}
+                    className="col-span-1 border border-slate-200 rounded px-1 py-1 text-xs text-right"
+                  />
+                  <div className="col-span-1 flex justify-end">
+                    {confianceBadge(l.confiance)}
                   </div>
                 </div>
               </div>
@@ -203,7 +229,7 @@ export default function ImportPDF({ profile }: Props) {
 
         <div className="flex gap-3">
           <button
-            onClick={() => setStep("upload")}
+            onClick={() => setStep("saisie")}
             className="px-4 py-2 text-sm border border-slate-300 rounded-md"
           >
             Retour
@@ -221,61 +247,29 @@ export default function ImportPDF({ profile }: Props) {
   }
 
   return (
-    <div className="p-8 max-w-lg">
-      <h1 className="text-xl font-semibold text-slate-900 mb-1">Import PDF</h1>
-      <p className="text-sm text-slate-500 mb-6">
-        Chargez une facture OCI pour en extraire les lignes automatiquement.
+    <div className="p-8 max-w-2xl">
+      <h1 className="text-xl font-semibold text-slate-900 mb-1">Import de reçus OCI</h1>
+      <p className="text-sm text-slate-500 mb-4">
+        Copiez le texte des reçus depuis Word (ou l'export équivalent) et collez-le
+        ci-dessous. Chaque reçu doit contenir une ligne "N°recu-facture:OCI-...".
       </p>
 
-      <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">
-            N° de facture <span className="text-red-500">*</span>
-          </label>
-          <input
-            type="text"
-            placeholder="OCI-ANG.009.xxxxx"
-            value={nFacture}
-            onChange={e => setNFacture(e.target.value)}
-            className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
-          />
-        </div>
+      <textarea
+        value={texteCollee}
+        onChange={e => setTexteCollee(e.target.value)}
+        placeholder="Collez ici le texte copié depuis Word..."
+        rows={14}
+        className="w-full border border-slate-300 rounded-md px-3 py-2 text-xs font-mono"
+      />
 
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Agence</label>
-          <input
-            type="text"
-            placeholder="ex : Angré 7ème Tranche"
-            value={agence}
-            onChange={e => setAgence(e.target.value)}
-            className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
-          />
-        </div>
+      {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
 
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Fichier PDF</label>
-          <div
-            onClick={() => fileRef.current?.click()}
-            className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center cursor-pointer hover:border-slate-400 transition-colors"
-          >
-            <p className="text-sm text-slate-500">
-              {loading ? "Lecture en cours..." : "Cliquez pour sélectionner un PDF"}
-            </p>
-          </div>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="application/pdf"
-            className="hidden"
-            onChange={e => {
-              const file = e.target.files?.[0];
-              if (file) handleFile(file);
-            }}
-          />
-        </div>
-
-        {error && <p className="text-sm text-red-600">{error}</p>}
-      </div>
+      <button
+        onClick={handleExtraire}
+        className="mt-4 px-4 py-2 text-sm bg-slate-900 text-white rounded-md hover:bg-slate-800"
+      >
+        Extraire les factures
+      </button>
     </div>
   );
 }
