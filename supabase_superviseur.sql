@@ -13,16 +13,20 @@
 
 -- =============================================================================
 -- 1. NOUVEAU RÔLE ET NOUVEAU STATUT
+--
+-- IMPORTANT : Postgres interdit d'utiliser une nouvelle valeur d'enum dans
+-- la même transaction que celle qui la crée ("unsafe use of new value").
+-- Exécuter ce bloc SEUL en premier (Run), attendre la confirmation, PUIS
+-- exécuter tout le reste du fichier dans une deuxième requête séparée.
 -- =============================================================================
 
 alter type role_utilisateur add value if not exists 'superviseur';
-
--- 'incomplete' : ligne importée automatiquement mais avec un ou plusieurs
--- champs manquants (agent non reconnu, date absente...). Distincte de
--- 'saisie' pour qu'un import massif ne bloque jamais sur ses lignes les
--- moins fiables — elles partent dans un backlog au lieu d'empêcher l'import
--- des lignes propres.
 alter type statut_vente add value if not exists 'incomplete';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- ARRÊT ICI pour la première exécution. Lancer "Run", vérifier l'absence
+-- d'erreur, puis exécuter tout ce qui suit dans une NOUVELLE requête.
+-- ─────────────────────────────────────────────────────────────────────────
 
 
 -- =============================================================================
