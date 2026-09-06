@@ -9,16 +9,17 @@ interface Props {
 interface LigneEquipe {
   profile_id: string;
   nom: string;
+  niveau: string | null;
   agence: string;
   ca_ttc: number;
   commission_oci: number;
   points: number;
+  quota_points: number;
   nb_ventes: number;
   objectif_mensuel: number;
   taux_atteinte: number;
 }
 
-// Génère les 12 derniers mois pour le sélecteur, du plus récent au plus ancien.
 function derniersMois(n: number): { debut: string; fin: string; libelle: string }[] {
   const mois = [];
   const now = new Date();
@@ -40,7 +41,7 @@ export default function Equipe({ profile }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const optionsMois = derniersMois(12);
-  const [moisChoisi, setMoisChoisi] = useState(0); // index dans optionsMois, 0 = mois courant
+  const [moisChoisi, setMoisChoisi] = useState(0);
   const { debut, fin } = optionsMois[moisChoisi];
 
   useEffect(() => {
@@ -48,12 +49,14 @@ export default function Equipe({ profile }: Props) {
       setLoading(true);
       setError(null);
 
-      // Le superviseur n'a pas accès à la table sales directement — il passe
-      // par sales_superviseur, qui exclut la colonne prime. Admin et DG
-      // lisent la table complète.
       const source = profile.role === "superviseur" ? "sales_superviseur" : "sales";
 
-      const [{ data: ventes, error: errVentes }, { data: profils }, { data: objectifs }] = await Promise.all([
+      const [
+        { data: ventes, error: errVentes },
+        { data: profils },
+        { data: objectifs },
+        { data: quotaPoints },
+      ] = await Promise.all([
         supabase
           .from(source)
           .select("profile_id, ca_ttc, commission_oci, points")
@@ -61,11 +64,11 @@ export default function Equipe({ profile }: Props) {
           .in("statut", ["validee", "en_attente_oci"])
           .gte("date_vente", debut)
           .lt("date_vente", fin),
-        supabase.from("profiles").select("id, nom, actif").eq("actif", true),
-        supabase
-          .from("objectifs")
-          .select("profile_id, univers, montant")
-          .eq("mois", debut),
+        // Uniquement les vrais commerciaux — exclut l'admin et les autres
+        // rôles, qui peuvent techniquement porter des ventes de test.
+        supabase.from("profiles").select("id, nom, niveau, actif").eq("actif", true).eq("role", "commercial"),
+        supabase.from("objectifs").select("profile_id, univers, montant").eq("mois", debut),
+        supabase.from("objectifs_points").select("profile_id, quota_points").eq("mois", debut),
       ]);
 
       if (errVentes) {
@@ -74,8 +77,6 @@ export default function Equipe({ profile }: Props) {
         return;
       }
 
-      // Agence courante : nécessite la vue dédiée du Lot 2 (agence_courante_view).
-      // À défaut on affiche "—" plutôt que de bloquer l'affichage.
       const { data: agences } = await supabase
         .from("agence_courante_view")
         .select("id, agence_courante");
@@ -83,9 +84,10 @@ export default function Equipe({ profile }: Props) {
       const agenceById = new Map((agences ?? []).map((a: { id: string; agence_courante: string | null }) => [a.id, a.agence_courante]));
       const objectifById = new Map<string, number>();
       (objectifs ?? []).forEach((o: { profile_id: string | null; montant: number }) => {
-        if (!o.profile_id) return; // objectif collectif, pas individuel
+        if (!o.profile_id) return;
         objectifById.set(o.profile_id, (objectifById.get(o.profile_id) ?? 0) + o.montant);
       });
+      const quotaById = new Map((quotaPoints ?? []).map((q: { profile_id: string; quota_points: number }) => [q.profile_id, q.quota_points]));
 
       const stats = new Map<string, { ca: number; comm: number; points: number; nb: number }>();
       (ventes ?? []).forEach((v: { profile_id: string | null; ca_ttc: number; commission_oci: number; points: number }) => {
@@ -99,23 +101,24 @@ export default function Equipe({ profile }: Props) {
       });
 
       const result: LigneEquipe[] = (profils ?? [])
-        .filter((p: { id: string; nom: string }) => stats.has(p.id) || objectifById.has(p.id))
-        .map((p: { id: string; nom: string }) => {
+        .map((p: { id: string; nom: string; niveau: string | null }) => {
           const s = stats.get(p.id) ?? { ca: 0, comm: 0, points: 0, nb: 0 };
           const objectif = objectifById.get(p.id) ?? 0;
           return {
             profile_id: p.id,
             nom: p.nom,
+            niveau: p.niveau,
             agence: agenceById.get(p.id) ?? "—",
             ca_ttc: s.ca,
             commission_oci: s.comm,
             points: s.points,
+            quota_points: quotaById.get(p.id) ?? 100,
             nb_ventes: s.nb,
             objectif_mensuel: objectif,
             taux_atteinte: objectif > 0 ? (s.ca / objectif) * 100 : 0,
           };
         })
-        .sort((a, b) => b.ca_ttc - a.ca_ttc);
+        .sort((a, b) => b.points - a.points);
 
       setLignes(result);
       setLoading(false);
@@ -151,27 +154,20 @@ export default function Equipe({ profile }: Props) {
             </option>
           ))}
         </select>
-        <span className="text-xs text-slate-400">
-          Ventes validées et en attente OCI (hors avoirs)
-        </span>
+        <span className="text-xs text-slate-400">Ventes validées et en attente OCI (hors avoirs)</span>
       </div>
 
-      {/* Résumé équipe */}
       <div className="grid grid-cols-3 gap-4 mb-6">
         <div className="bg-white border border-slate-200 rounded-lg p-4">
           <div className="text-xs text-slate-500 mb-1">CA équipe</div>
-          <div className="text-lg font-semibold text-slate-900">
-            {totaux.ca.toLocaleString("fr-FR")} F
-          </div>
+          <div className="text-lg font-semibold text-slate-900">{totaux.ca.toLocaleString("fr-FR")} F</div>
         </div>
         <div className="bg-white border border-slate-200 rounded-lg p-4">
           <div className="text-xs text-slate-500 mb-1">Commission OCI équipe</div>
-          <div className="text-lg font-semibold text-slate-900">
-            {totaux.comm.toLocaleString("fr-FR")} F
-          </div>
+          <div className="text-lg font-semibold text-slate-900">{totaux.comm.toLocaleString("fr-FR")} F</div>
         </div>
         <div className="bg-white border border-slate-200 rounded-lg p-4">
-          <div className="text-xs text-slate-500 mb-1">Taux d'atteinte équipe</div>
+          <div className="text-xs text-slate-500 mb-1">Taux d'atteinte objectif OCI</div>
           <div className="text-lg font-semibold text-slate-900">
             {totaux.objectif > 0 ? ((totaux.ca / totaux.objectif) * 100).toFixed(0) : "—"}%
           </div>
@@ -179,57 +175,73 @@ export default function Equipe({ profile }: Props) {
       </div>
 
       {lignes.length === 0 ? (
-        <p className="text-sm text-slate-500">Aucune vente validée ce mois-ci pour le moment.</p>
+        <p className="text-sm text-slate-500">Aucune vente ce mois-ci pour le moment.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200 text-left text-slate-500">
                 <th className="py-2 pr-4 font-medium">Commercial</th>
+                <th className="py-2 pr-4 font-medium">Niveau</th>
                 <th className="py-2 pr-4 font-medium">Agence</th>
                 <th className="py-2 pr-4 font-medium">Ventes</th>
                 <th className="py-2 pr-4 font-medium">CA TTC</th>
                 <th className="py-2 pr-4 font-medium">Commission OCI</th>
-                <th className="py-2 pr-4 font-medium">Points</th>
-                <th className="py-2 pr-4 font-medium">Objectif</th>
-                <th className="py-2 pr-4 font-medium">Atteinte</th>
+                <th className="py-2 pr-4 font-medium">Points / Quota</th>
+                <th className="py-2 pr-4 font-medium">Quota Azur</th>
+                {profile.role === "admin" && <th className="py-2 pr-4 font-medium">Salaire du mois</th>}
               </tr>
             </thead>
             <tbody>
-              {lignes.map((l) => (
-                <tr key={l.profile_id} className="border-b border-slate-100">
-                  <td className="py-2 pr-4 text-slate-900 font-medium">{l.nom}</td>
-                  <td className="py-2 pr-4 text-slate-600">{l.agence}</td>
-                  <td className="py-2 pr-4 text-slate-700">{l.nb_ventes}</td>
-                  <td className="py-2 pr-4 text-slate-700">{l.ca_ttc.toLocaleString("fr-FR")} F</td>
-                  <td className="py-2 pr-4 text-slate-700">{l.commission_oci.toLocaleString("fr-FR")} F</td>
-                  <td className="py-2 pr-4 text-slate-700">{l.points.toFixed(0)}</td>
-                  <td className="py-2 pr-4 text-slate-500">
-                    {l.objectif_mensuel > 0 ? l.objectif_mensuel.toLocaleString("fr-FR") + " F" : "—"}
-                  </td>
-                  <td className="py-2 pr-4">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full ${
-                        l.taux_atteinte >= 100
-                          ? "bg-green-100 text-green-700"
-                          : l.taux_atteinte >= 70
-                          ? "bg-amber-100 text-amber-700"
-                          : "bg-red-100 text-red-700"
-                      }`}
-                    >
-                      {l.objectif_mensuel > 0 ? l.taux_atteinte.toFixed(0) + "%" : "—"}
-                    </span>
-                  </td>
-                </tr>
-              ))}
+              {lignes.map((l) => {
+                const quotaAtteint = l.points >= l.quota_points;
+                return (
+                  <tr key={l.profile_id} className="border-b border-slate-100">
+                    <td className="py-2 pr-4 text-slate-900 font-medium">{l.nom}</td>
+                    <td className="py-2 pr-4">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 capitalize">
+                        {l.niveau ?? "?"}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-4 text-slate-600">{l.agence}</td>
+                    <td className="py-2 pr-4 text-slate-700">{l.nb_ventes}</td>
+                    <td className="py-2 pr-4 text-slate-700">{l.ca_ttc.toLocaleString("fr-FR")} F</td>
+                    <td className="py-2 pr-4 text-slate-700">{l.commission_oci.toLocaleString("fr-FR")} F</td>
+                    <td className="py-2 pr-4 text-slate-700">
+                      {l.points.toFixed(0)} / {l.quota_points.toFixed(0)}
+                    </td>
+                    <td className="py-2 pr-4">
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full ${
+                          quotaAtteint ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                        }`}
+                      >
+                        {quotaAtteint ? "Atteint" : "Non atteint"}
+                      </span>
+                    </td>
+                    {profile.role === "admin" && (
+                      <td className="py-2 pr-4 text-xs text-slate-500">
+                        {l.niveau === "senior"
+                          ? quotaAtteint
+                            ? "250 000 F (Senior)"
+                            : "150 000 F (bascule Junior)"
+                          : l.niveau === "junior"
+                          ? "150 000 F"
+                          : "—"}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
 
       <p className="text-xs text-slate-400 mt-6">
-        Ne sont affichés que le CA, la commission OCI et les points de barème — jamais la prime
-        individuelle ni un salaire.
+        Le quota de points est propre à Azur Inter (contrats CDD, avril 2026) — distinct de l'objectif
+        trimestriel OCI. Jamais communiqué à OCI. La prime individuelle et le détail salarial ne sont
+        visibles que par l'administrateur.
       </p>
     </div>
   );
