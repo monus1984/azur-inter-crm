@@ -8,6 +8,7 @@ import SaisieVente from "./pages/SaisieVente";
 import Validation from "./pages/Validation";
 import ImportPDF from "./pages/ImportPDF";
 import Backlog from "./pages/Backlog";
+import Equipe from "./pages/Equipe";
 import type { Profile } from "./types/database";
 
 function NavItem({ to, label }: { to: string; label: string }) {
@@ -40,6 +41,7 @@ function Shell({ children, profile }: { children: React.ReactNode; profile: Prof
             <span className="font-semibold text-slate-900 mr-4">Azur Inter</span>
             <NavItem to="/" label="Dashboard" />
             <NavItem to="/ventes" label="Ventes" />
+            {(isAdmin || profile.role === "dg" || isSuperviseur) && <NavItem to="/equipe" label="Équipe" />}
             {(isCommercial || isAdmin) && <NavItem to="/saisie" label="+ Vente" />}
             {(isCommercial || isAdmin) && <NavItem to="/import-pdf" label="Import PDF" />}
             {isAdmin && <NavItem to="/validation" label="Validation" />}
@@ -94,6 +96,14 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard profile={profile} />} />
           <Route path="/ventes" element={<Ventes profile={profile} />} />
+          <Route
+            path="/equipe"
+            element={
+              profile.role === "commercial" || profile.role === "oci"
+                ? <Navigate to="/" replace />
+                : <Equipe profile={profile} />
+            }
+          />
           <Route
             path="/saisie"
             element={!peutSaisirOuImporter ? <Navigate to="/" replace /> : <SaisieVente profile={profile} />}
