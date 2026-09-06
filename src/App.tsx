@@ -9,6 +9,7 @@ import Validation from "./pages/Validation";
 import ImportPDF from "./pages/ImportPDF";
 import Backlog from "./pages/Backlog";
 import Equipe from "./pages/Equipe";
+import Paie from "./pages/Paie";
 import type { Profile } from "./types/database";
 
 function NavItem({ to, label }: { to: string; label: string }) {
@@ -42,6 +43,7 @@ function Shell({ children, profile }: { children: React.ReactNode; profile: Prof
             <NavItem to="/" label="Dashboard" />
             <NavItem to="/ventes" label="Ventes" />
             {(isAdmin || profile.role === "dg" || isSuperviseur) && <NavItem to="/equipe" label="Équipe" />}
+            {isAdmin && <NavItem to="/paie" label="Paie" />}
             {(isCommercial || isAdmin) && <NavItem to="/saisie" label="+ Vente" />}
             {(isCommercial || isAdmin) && <NavItem to="/import-pdf" label="Import PDF" />}
             {isAdmin && <NavItem to="/validation" label="Validation" />}
@@ -103,6 +105,10 @@ export default function App() {
                 ? <Navigate to="/" replace />
                 : <Equipe profile={profile} />
             }
+          />
+          <Route
+            path="/paie"
+            element={profile.role !== "admin" ? <Navigate to="/" replace /> : <Paie profile={profile} />}
           />
           <Route
             path="/saisie"
