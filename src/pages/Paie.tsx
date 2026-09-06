@@ -13,6 +13,7 @@ interface LignePaie {
   mois: string;
   niveau_applique: string;
   salaire_verse: number;
+  prime_du_mois: number;
   points_realises: number | null;
   quota_points: number | null;
   quota_atteint: boolean | null;
@@ -52,17 +53,41 @@ export default function Paie({ profile }: Props) {
   async function charger() {
     setLoading(true);
     const mois = optionsMois[moisChoisi].debut;
-    const { data } = await supabase
-      .from("remuneration")
-      .select("id, profile_id, mois, niveau_applique, salaire_verse, points_realises, quota_points, quota_atteint, note")
-      .eq("mois", mois);
+    const finMois = new Date(mois);
+    finMois.setMonth(finMois.getMonth() + 1);
+    const finMoisIso = finMois.toISOString().slice(0, 10);
 
-    const { data: profils } = await supabase.from("profiles").select("id, nom");
+    const [{ data }, { data: profils }, { data: ventes }] = await Promise.all([
+      supabase
+        .from("remuneration")
+        .select("id, profile_id, mois, niveau_applique, salaire_verse, points_realises, quota_points, quota_atteint, note")
+        .eq("mois", mois),
+      supabase.from("profiles").select("id, nom"),
+      // La prime vit sur les ventes, pas sur remuneration : on l'agrège ici
+      // pour afficher le vrai total versé au commercial.
+      supabase
+        .from("sales")
+        .select("profile_id, prime")
+        .eq("est_avoir", false)
+        .neq("statut", "incomplete")
+        .gte("date_vente", mois)
+        .lt("date_vente", finMoisIso),
+    ]);
+
     const nomById = new Map((profils ?? []).map((p: { id: string; nom: string }) => [p.id, p.nom]));
+    const primeById = new Map<string, number>();
+    (ventes ?? []).forEach((v: { profile_id: string | null; prime: number }) => {
+      if (!v.profile_id) return;
+      primeById.set(v.profile_id, (primeById.get(v.profile_id) ?? 0) + (v.prime || 0));
+    });
 
     setLignes(
       (data ?? [])
-        .map((r) => ({ ...r, nom: nomById.get(r.profile_id) ?? "—" }))
+        .map((r) => ({
+          ...r,
+          nom: nomById.get(r.profile_id) ?? "—",
+          prime_du_mois: primeById.get(r.profile_id) ?? 0,
+        }))
         .sort((a, b) => a.nom.localeCompare(b.nom))
     );
     setLoading(false);
@@ -91,7 +116,9 @@ export default function Paie({ profile }: Props) {
     charger();
   }
 
-  const total = lignes.reduce((s, l) => s + l.salaire_verse, 0);
+  const totalSalaires = lignes.reduce((s, l) => s + l.salaire_verse, 0);
+  const totalPrimes = lignes.reduce((s, l) => s + l.prime_du_mois, 0);
+  const total = totalSalaires + totalPrimes;
 
   return (
     <div className="p-8">
@@ -116,9 +143,19 @@ export default function Paie({ profile }: Props) {
         </p>
       ) : (
         <>
-          <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 inline-block">
-            <div className="text-xs text-slate-500 mb-1">Masse salariale du mois</div>
-            <div className="text-lg font-semibold text-slate-900">{total.toLocaleString("fr-FR")} F</div>
+          <div className="flex gap-4 mb-4">
+            <div className="bg-white border border-slate-200 rounded-lg p-4">
+              <div className="text-xs text-slate-500 mb-1">Salaires du mois</div>
+              <div className="text-lg font-semibold text-slate-900">{totalSalaires.toLocaleString("fr-FR")} F</div>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-lg p-4">
+              <div className="text-xs text-slate-500 mb-1">Primes du mois</div>
+              <div className="text-lg font-semibold text-slate-900">{totalPrimes.toLocaleString("fr-FR")} F</div>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-lg p-4">
+              <div className="text-xs text-slate-500 mb-1">Masse salariale totale</div>
+              <div className="text-lg font-semibold text-slate-900">{total.toLocaleString("fr-FR")} F</div>
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -129,7 +166,9 @@ export default function Paie({ profile }: Props) {
                   <th className="py-2 pr-4 font-medium">Niveau appliqué</th>
                   <th className="py-2 pr-4 font-medium">Points / Quota</th>
                   <th className="py-2 pr-4 font-medium">Quota</th>
-                  <th className="py-2 pr-4 font-medium">Salaire</th>
+                  <th className="py-2 pr-4 font-medium">Salaire de base</th>
+                  <th className="py-2 pr-4 font-medium">Prime</th>
+                  <th className="py-2 pr-4 font-medium">Total versé</th>
                   <th className="py-2 pr-4 font-medium">Note</th>
                   <th className="py-2 pr-4 font-medium"></th>
                 </tr>
@@ -160,8 +199,14 @@ export default function Paie({ profile }: Props) {
                           className="w-24 border border-slate-300 rounded px-2 py-1 text-xs"
                         />
                       ) : (
-                        <span className="text-slate-900 font-medium">{l.salaire_verse.toLocaleString("fr-FR")} F</span>
+                        <span className="text-slate-700">{l.salaire_verse.toLocaleString("fr-FR")} F</span>
                       )}
+                    </td>
+                    <td className="py-2 pr-4 text-slate-700">
+                      {l.prime_du_mois.toLocaleString("fr-FR")} F
+                    </td>
+                    <td className="py-2 pr-4 text-slate-900 font-medium">
+                      {(l.salaire_verse + l.prime_du_mois).toLocaleString("fr-FR")} F
                     </td>
                     <td className="py-2 pr-4">
                       {editId === l.id ? (
