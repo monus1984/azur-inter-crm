@@ -18,25 +18,30 @@ interface LigneEquipe {
   taux_atteinte: number;
 }
 
-// Mois courant par défaut. Simple pour l'instant — un sélecteur de mois
-// viendra si le besoin se confirme.
-function moisCourant(): { debut: string; fin: string; libelle: string } {
+// Génère les 12 derniers mois pour le sélecteur, du plus récent au plus ancien.
+function derniersMois(n: number): { debut: string; fin: string; libelle: string }[] {
+  const mois = [];
   const now = new Date();
-  const debut = new Date(now.getFullYear(), now.getMonth(), 1);
-  const fin = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
-  return {
-    debut: iso(debut),
-    fin: iso(fin),
-    libelle: debut.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }),
-  };
+  for (let i = 0; i < n; i++) {
+    const debut = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const fin = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+    const iso = (d: Date) => d.toISOString().slice(0, 10);
+    mois.push({
+      debut: iso(debut),
+      fin: iso(fin),
+      libelle: debut.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }),
+    });
+  }
+  return mois;
 }
 
 export default function Equipe({ profile }: Props) {
   const [lignes, setLignes] = useState<LigneEquipe[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { debut, fin, libelle } = moisCourant();
+  const optionsMois = derniersMois(12);
+  const [moisChoisi, setMoisChoisi] = useState(0); // index dans optionsMois, 0 = mois courant
+  const { debut, fin } = optionsMois[moisChoisi];
 
   useEffect(() => {
     async function charger() {
@@ -53,7 +58,7 @@ export default function Equipe({ profile }: Props) {
           .from(source)
           .select("profile_id, ca_ttc, commission_oci, points")
           .eq("est_avoir", false)
-          .eq("statut", "validee")
+          .in("statut", ["validee", "en_attente_oci"])
           .gte("date_vente", debut)
           .lt("date_vente", fin),
         supabase.from("profiles").select("id, nom, actif").eq("actif", true),
@@ -134,7 +139,22 @@ export default function Equipe({ profile }: Props) {
   return (
     <div className="p-8">
       <h1 className="text-xl font-semibold text-slate-900 mb-1">Équipe</h1>
-      <p className="text-sm text-slate-500 mb-6 capitalize">{libelle}</p>
+      <div className="flex items-center gap-3 mb-6">
+        <select
+          value={moisChoisi}
+          onChange={(e) => setMoisChoisi(parseInt(e.target.value))}
+          className="text-sm border border-slate-300 rounded-md px-2 py-1 capitalize"
+        >
+          {optionsMois.map((m, i) => (
+            <option key={m.debut} value={i} className="capitalize">
+              {m.libelle}
+            </option>
+          ))}
+        </select>
+        <span className="text-xs text-slate-400">
+          Ventes validées et en attente OCI (hors avoirs)
+        </span>
+      </div>
 
       {/* Résumé équipe */}
       <div className="grid grid-cols-3 gap-4 mb-6">
