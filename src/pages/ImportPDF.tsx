@@ -124,7 +124,8 @@ function ImportVentesExcel({ profile }: { profile: Profile }) {
       const nJournal = String(row["N° Journal"] ?? "").trim();
 
       // Statut : validee si données complètes, en_attente_oci si manquant
-      const donneeComplete = !!profileId && !!nFacture && !nJournal.includes("COMPLÉTER");
+      const journalValide = /^\d+$/.test(nJournal.trim());
+      const donneeComplete = !!profileId && !!nFacture && journalValide;
       const statut = donneeComplete ? "validee" : "en_attente_oci";
 
       sales.push({
@@ -141,7 +142,7 @@ function ImportVentesExcel({ profile }: { profile: Profile }) {
         points: 0,
         prime: 0,
         n_facture: nFacture,
-        n_journal: nJournal && !nJournal.includes("COMPLÉTER") ? nJournal : null,
+        n_journal: journalValide ? nJournal : null,
         n_client: String(row["N° Client"] ?? "").trim() || null,
         ref_oci: String(row["Réf. OCI/B"] ?? "").trim() || null,
         mode_paiement: String(row["Mode Paiement"] ?? "").trim() || null,
