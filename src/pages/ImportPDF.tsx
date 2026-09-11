@@ -448,30 +448,37 @@ function ImportOCIExcel({ profile }: { profile: Profile }) {
     return transactions;
   }
 
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  async function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
     setStatus("loading");
     setLog([]);
 
     try {
-      const buffer = await file.arrayBuffer();
-      const wb = XLSX.read(buffer, { type: "array" });
-      addLog(`Feuilles détectées : ${wb.SheetNames.join(", ")}`);
+      let toutesTransactions: Record<string, unknown>[] = [];
 
-      const transactions = parseOCIWorkbook(wb);
-      addLog(`Total : ${transactions.length} transactions parsées.`);
+      for (const file of files) {
+        addLog(`📄 Lecture : ${file.name}`);
+        const buffer = await file.arrayBuffer();
+        const wb = XLSX.read(buffer, { type: "array" });
+        addLog(`  Feuilles : ${wb.SheetNames.join(", ")}`);
+        const transactions = parseOCIWorkbook(wb);
+        addLog(`  → ${transactions.length} transactions parsées.`);
+        toutesTransactions = [...toutesTransactions, ...transactions];
+      }
 
-      if (transactions.length === 0) throw new Error("Aucune donnée trouvée. Vérifiez les noms des feuilles.");
+      addLog(`Total brut : ${toutesTransactions.length} transactions sur ${files.length} fichier(s).`);
 
-      const chunks = chunk(transactions, 200);
+      if (toutesTransactions.length === 0) throw new Error("Aucune donnée trouvée. Vérifiez les noms des feuilles.");
+
+      const chunks = chunk(toutesTransactions, 200);
       for (let i = 0; i < chunks.length; i++) {
         const { error } = await supabase.from("oci_transactions").insert(chunks[i]);
         if (error) throw new Error(error.message);
         addLog(`  Lot ${i + 1}/${chunks.length} — ${chunks[i].length} lignes envoyées.`);
       }
 
-      addLog(`✅ Import terminé — ${transactions.length} transactions OCI insérées.`);
+      addLog(`✅ Import terminé — ${toutesTransactions.length} transactions OCI insérées.`);
       setStatus("done");
     } catch (err: unknown) {
       addLog(`❌ ${err instanceof Error ? err.message : String(err)}`);
@@ -484,19 +491,20 @@ function ImportOCIExcel({ profile }: { profile: Profile }) {
   return (
     <div>
       <p className="text-sm text-slate-500 mb-4">
-        Fichier attendu : <code className="bg-slate-100 px-1 rounded">OCI_DISTRI_OSS_AZUR_INTER_*.xlsx</code>
+        Fichier(s) attendu(s) : <code className="bg-slate-100 px-1 rounded">OCI_DISTRI_OSS_AZUR_INTER_*.xlsx</code>
         <br />Feuilles traitées : <strong>Base FTTH</strong>, <strong>Base Backlog</strong>, <strong>Base 4G</strong>, <strong>Mobile NTS</strong>
       </p>
 
       <label className="flex flex-col items-center justify-center border-2 border-dashed border-slate-300 rounded-lg p-8 cursor-pointer hover:border-slate-400 transition-colors mb-4">
         <span className="text-2xl mb-2">📡</span>
-        <span className="text-sm font-medium text-slate-700 mb-1">Cliquer pour choisir le rapport OCI</span>
-        <span className="text-xs text-slate-400">.xlsx uniquement</span>
+        <span className="text-sm font-medium text-slate-700 mb-1">Cliquer pour choisir un ou plusieurs rapports OCI</span>
+        <span className="text-xs text-slate-400">.xlsx — sélection multiple autorisée</span>
         <input
           ref={fileRef}
           type="file"
           accept=".xlsx,.xls"
-          onChange={handleFile}
+          multiple
+          onChange={handleFiles}
           className="hidden"
           disabled={status === "loading"}
         />
