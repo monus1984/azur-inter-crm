@@ -85,6 +85,7 @@ function ImportVentesExcel({ profile }: { profile: Profile }) {
   const [log, setLog] = useState<string[]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [preview, setPreview] = useState<Record<string, unknown>[] | null>(null);
+  const [stats, setStats] = useState<{ inseres: number; doublons: number; incomplets: number } | null>(null);
 
   function addLog(msg: string) {
     setLog(prev => [...prev, msg]);
@@ -99,81 +100,145 @@ function ImportVentesExcel({ profile }: { profile: Profile }) {
     return map;
   }
 
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Parse un workbook → tableau de lignes sales
+  function parseWorkbook(wb: XLSX.WorkBook, loginToId: Record<string, string>) {
+    const sheetName = wb.SheetNames.find(n =>
+      n.toLowerCase().includes("ventes") || n.toLowerCase().includes("données")
+    );
+    if (!sheetName) throw new Error("Feuille 'Données ventes AZUR' introuvable.");
+
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: null }) as Record<string, unknown>[];
+    const sales = [];
+    let skippedDate = 0;
+
+    for (const row of rows) {
+      const dateVente = parseExcelDate(row["Date"]);
+      if (!dateVente) { skippedDate++; continue; }
+
+      const nomRaw = String(row["Commercial"] ?? "").trim().toUpperCase();
+      const loginOci = NOM_TO_LOGIN[nomRaw];
+      const profileId = loginOci ? loginToId[loginOci] : null;
+      const nFacture = String(row["N° Reçu-Facture"] ?? "").trim() || null;
+      const caTtc = parseFloat(String(row["CA TTC (XOF)"] ?? row["Prix TTC (XOF)"] ?? 0));
+      const commOci = parseFloat(String(row["Comm. OCI HT (XOF)"] ?? 0));
+      const nJournal = String(row["N° Journal"] ?? "").trim();
+
+      // Statut : validee si données complètes, en_attente_oci si manquant
+      const donneeComplete = !!profileId && !!nFacture && !nJournal.includes("COMPLÉTER");
+      const statut = donneeComplete ? "validee" : "en_attente_oci";
+
+      sales.push({
+        profile_id: profileId ?? "00000000-0000-0000-0000-000000000020",
+        date_vente: dateVente,
+        agence: String(row["Agence"] ?? "").trim() || null,
+        univers: normalizeUnivers(String(row["Univers"] ?? row["Offre / Libellé"] ?? "")),
+        offre: String(row["Offre / Libellé"] ?? "").trim() || "Inconnu",
+        client: String(row["Client"] ?? "").trim() || null,
+        quantite: parseInt(String(row["Qté"] ?? 1), 10),
+        prix_unitaire: parseFloat(String(row["Prix TTC (XOF)"] ?? 0)),
+        ca_ttc: caTtc,
+        commission_oci: commOci,
+        points: 0,
+        prime: 0,
+        n_facture: nFacture,
+        n_journal: nJournal && !nJournal.includes("COMPLÉTER") ? nJournal : null,
+        n_client: String(row["N° Client"] ?? "").trim() || null,
+        ref_oci: String(row["Réf. OCI/B"] ?? "").trim() || null,
+        mode_paiement: String(row["Mode Paiement"] ?? "").trim() || null,
+        statut,
+        est_avoir: caTtc < 0,
+        cree_par: profile.id,
+        _nFacture: nFacture, // champ temporaire pour déduplication
+      });
+    }
+
+    return { sales, skippedDate };
+  }
+
+  async function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
     setStatus("loading");
     setLog([]);
     setPreview(null);
+    setStats(null);
 
     try {
-      const buffer = await file.arrayBuffer();
-      const wb = XLSX.read(buffer, { type: "array" });
-
-      // Trouver la feuille ventes
-      const sheetName = wb.SheetNames.find(n =>
-        n.toLowerCase().includes("ventes") || n.toLowerCase().includes("données")
-      );
-      if (!sheetName) throw new Error("Feuille 'Données ventes AZUR' introuvable dans ce fichier.");
-
-      addLog(`Feuille trouvée : "${sheetName}"`);
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: null }) as Record<string, unknown>[];
-      addLog(`${rows.length} lignes lues.`);
-
       const loginToId = await fetchLoginToId();
-      addLog(`${Object.keys(loginToId).length} commerciaux en base.`);
+      addLog(`${Object.keys(loginToId).length} commerciaux trouvés en base.`);
 
-      const sales = [];
-      const skipped: string[] = [];
+      // 1. Parser tous les fichiers
+      let toutesLignes: (ReturnType<typeof parseWorkbook>["sales"][0])[] = [];
+      let totalSkippedDate = 0;
 
-      for (const row of rows) {
-        const dateVente = parseExcelDate(row["Date"]);
-        if (!dateVente) {
-          skipped.push(`Ligne sans date ignorée`);
-          continue;
-        }
-        const nomRaw = String(row["Commercial"] ?? "").trim().toUpperCase();
-        const loginOci = NOM_TO_LOGIN[nomRaw];
-        const profileId = loginOci ? loginToId[loginOci] : null;
-        const caTtc = parseFloat(String(row["CA TTC (XOF)"] ?? row["Prix TTC (XOF)"] ?? 0));
-        const commOci = parseFloat(String(row["Comm. OCI HT (XOF)"] ?? 0));
-        const nJournal = String(row["N° Journal"] ?? "").trim();
+      for (const file of files) {
+        addLog(`📄 Lecture : ${file.name}`);
+        const buffer = await file.arrayBuffer();
+        const wb = XLSX.read(buffer, { type: "array" });
+        const { sales, skippedDate } = parseWorkbook(wb, loginToId);
+        addLog(`   → ${sales.length} lignes parsées${skippedDate > 0 ? `, ${skippedDate} sans date ignorées` : ""}`);
+        toutesLignes = [...toutesLignes, ...sales];
+        totalSkippedDate += skippedDate;
+      }
 
-        sales.push({
-          profile_id: profileId ?? "00000000-0000-0000-0000-000000000020",
-          date_vente: dateVente,
-          agence: String(row["Agence"] ?? "").trim() || null,
-          univers: normalizeUnivers(String(row["Univers"] ?? row["Offre / Libellé"] ?? "")),
-          offre: String(row["Offre / Libellé"] ?? "").trim() || "Inconnu",
-          client: String(row["Client"] ?? "").trim() || null,
-          quantite: parseInt(String(row["Qté"] ?? 1), 10),
-          prix_unitaire: parseFloat(String(row["Prix TTC (XOF)"] ?? 0)),
-          ca_ttc: caTtc,
-          commission_oci: commOci,
-          points: 0,
-          prime: 0,
-          n_facture: String(row["N° Reçu-Facture"] ?? "").trim() || null,
-          n_journal: nJournal && !nJournal.includes("COMPLÉTER") ? nJournal : null,
-          n_client: String(row["N° Client"] ?? "").trim() || null,
-          ref_oci: String(row["Réf. OCI/B"] ?? "").trim() || null,
-          mode_paiement: String(row["Mode Paiement"] ?? "").trim() || null,
-          statut: "saisie",
-          est_avoir: caTtc < 0,
-          cree_par: profile.id,
+      addLog(`Total brut : ${toutesLignes.length} lignes sur ${files.length} fichier(s).`);
+
+      // 2. Déduplication interne (entre fichiers)
+      const vusEnLocal = new Set<string>();
+      toutesLignes = toutesLignes.filter(l => {
+        const cle = `${l._nFacture}|${l.offre}|${l.ca_ttc}`;
+        if (vusEnLocal.has(cle)) return false;
+        vusEnLocal.add(cle);
+        return true;
+      });
+      addLog(`Après déduplication interne : ${toutesLignes.length} lignes.`);
+
+      // 3. Déduplication base (n_facture déjà en base)
+      const nFactures = [...new Set(toutesLignes.map(l => l._nFacture).filter(Boolean))];
+      let doublonsBase = 0;
+      if (nFactures.length > 0) {
+        const { data: existantes } = await supabase
+          .from("sales")
+          .select("n_facture, offre, ca_ttc")
+          .in("n_facture", nFactures as string[]);
+        const clesBase = new Set(
+          (existantes ?? []).map((e: { n_facture: string; offre: string; ca_ttc: number }) =>
+            `${e.n_facture}|${e.offre}|${e.ca_ttc}`
+          )
+        );
+        const avant = toutesLignes.length;
+        toutesLignes = toutesLignes.filter(l => {
+          const cle = `${l._nFacture}|${l.offre}|${l.ca_ttc}`;
+          return !clesBase.has(cle);
         });
+        doublonsBase = avant - toutesLignes.length;
+        if (doublonsBase > 0) addLog(`⚠ ${doublonsBase} doublons déjà en base exclus.`);
       }
 
-      setPreview(sales.slice(0, 5) as Record<string, unknown>[]);
-      addLog(`${sales.length} lignes à importer, ${skipped.length} ignorées (date manquante).`);
+      if (toutesLignes.length === 0) {
+        addLog("⚠ Aucune nouvelle ligne à insérer — tout est déjà en base.");
+        setStatus("done");
+        setStats({ inseres: 0, doublons: doublonsBase, incomplets: 0 });
+        return;
+      }
 
-      const chunks = chunk(sales, 200);
-      for (let i = 0; i < chunks.length; i++) {
-        const { error } = await supabase.from("sales").insert(chunks[i]);
+      // 4. Nettoyer le champ temporaire avant insertion
+      const aInserer = toutesLignes.map(({ _nFacture, ...rest }) => rest);
+      const nbIncomplets = aInserer.filter(l => l.statut === "en_attente_oci").length;
+
+      setPreview(aInserer.slice(0, 5) as Record<string, unknown>[]);
+      addLog(`À insérer : ${aInserer.length} lignes (dont ${nbIncomplets} en attente OCI).`);
+
+      // 5. Insertion par lots
+      const chunks2 = chunk(aInserer, 200);
+      for (let i = 0; i < chunks2.length; i++) {
+        const { error } = await supabase.from("sales").insert(chunks2[i]);
         if (error) throw new Error(error.message);
-        addLog(`  Lot ${i + 1}/${chunks.length} — ${chunks[i].length} lignes envoyées.`);
+        addLog(`  Lot ${i + 1}/${chunks2.length} — ${chunks2[i].length} lignes envoyées.`);
       }
 
-      addLog(`✅ Import terminé — ${sales.length} ventes insérées.`);
+      setStats({ inseres: aInserer.length, doublons: doublonsBase, incomplets: nbIncomplets });
+      addLog(`✅ Import terminé — ${aInserer.length} ventes insérées.`);
       setStatus("done");
     } catch (err: unknown) {
       addLog(`❌ ${err instanceof Error ? err.message : String(err)}`);
@@ -186,19 +251,20 @@ function ImportVentesExcel({ profile }: { profile: Profile }) {
   return (
     <div>
       <p className="text-sm text-slate-500 mb-4">
-        Fichier attendu : <code className="bg-slate-100 px-1 rounded">AZUR_INTER_Ventes_Justificatif_OCI_*.xlsx</code>
-        <br />Feuille : <strong>Données ventes AZUR</strong>
+        Fichier(s) attendu(s) : <code className="bg-slate-100 px-1 rounded">AZUR_INTER_Ventes_Justificatif_OCI_*.xlsx</code>
+        <br />Feuille : <strong>Données ventes AZUR</strong> — Sélection multiple possible.
       </p>
 
       <label className="flex flex-col items-center justify-center border-2 border-dashed border-slate-300 rounded-lg p-8 cursor-pointer hover:border-slate-400 transition-colors mb-4">
         <span className="text-2xl mb-2">📂</span>
-        <span className="text-sm font-medium text-slate-700 mb-1">Cliquer pour choisir le fichier Excel</span>
-        <span className="text-xs text-slate-400">.xlsx uniquement</span>
+        <span className="text-sm font-medium text-slate-700 mb-1">Cliquer pour choisir un ou plusieurs fichiers Excel</span>
+        <span className="text-xs text-slate-400">.xlsx — sélection multiple autorisée</span>
         <input
           ref={fileRef}
           type="file"
           accept=".xlsx,.xls"
-          onChange={handleFile}
+          multiple
+          onChange={handleFiles}
           className="hidden"
           disabled={status === "loading"}
         />
@@ -216,10 +282,27 @@ function ImportVentesExcel({ profile }: { profile: Profile }) {
         </div>
       )}
 
+      {stats && (
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <div className="bg-green-50 rounded-lg p-3 text-center">
+            <div className="text-lg font-bold text-green-700">{stats.inseres}</div>
+            <div className="text-xs text-green-600">insérées</div>
+          </div>
+          <div className="bg-amber-50 rounded-lg p-3 text-center">
+            <div className="text-lg font-bold text-amber-700">{stats.incomplets}</div>
+            <div className="text-xs text-amber-600">en attente OCI</div>
+          </div>
+          <div className="bg-slate-50 rounded-lg p-3 text-center">
+            <div className="text-lg font-bold text-slate-500">{stats.doublons}</div>
+            <div className="text-xs text-slate-400">doublons exclus</div>
+          </div>
+        </div>
+      )}
+
       {log.length > 0 && (
         <div className="bg-slate-900 text-slate-300 rounded-lg p-3 font-mono text-xs max-h-48 overflow-y-auto mb-4">
           {log.map((l, i) => (
-            <div key={i} style={{ color: l.startsWith("✅") ? "#4ade80" : l.startsWith("❌") ? "#f87171" : undefined }}>
+            <div key={i} style={{ color: l.startsWith("✅") ? "#4ade80" : l.startsWith("❌") ? "#f87171" : l.startsWith("⚠") ? "#fbbf24" : undefined }}>
               {l}
             </div>
           ))}
@@ -228,12 +311,12 @@ function ImportVentesExcel({ profile }: { profile: Profile }) {
 
       {preview && (
         <div>
-          <p className="text-xs font-medium text-slate-600 mb-2">Aperçu (5 premières lignes)</p>
+          <p className="text-xs font-medium text-slate-600 mb-2">Aperçu (5 premières lignes insérées)</p>
           <div className="overflow-x-auto">
             <table className="text-xs border-collapse w-full">
               <thead>
                 <tr>
-                  {["date_vente","agence","offre","univers","ca_ttc","commercial","n_facture"].map(k => (
+                  {["date_vente","agence","offre","univers","ca_ttc","statut","n_facture"].map(k => (
                     <th key={k} className="bg-slate-100 border border-slate-200 px-2 py-1 text-left font-medium">{k}</th>
                   ))}
                 </tr>
@@ -241,8 +324,8 @@ function ImportVentesExcel({ profile }: { profile: Profile }) {
               <tbody>
                 {preview.map((row, i) => (
                   <tr key={i}>
-                    {["date_vente","agence","offre","univers","ca_ttc","profile_id","n_facture"].map(k => (
-                      <td key={k} className="border border-slate-200 px-2 py-1 max-w-[120px] truncate">
+                    {["date_vente","agence","offre","univers","ca_ttc","statut","n_facture"].map(k => (
+                      <td key={k} className={`border border-slate-200 px-2 py-1 max-w-[120px] truncate ${k === "statut" && row[k] === "en_attente_oci" ? "text-amber-600 font-medium" : ""}`}>
                         {row[k] == null ? <span className="text-slate-300">—</span> : String(row[k])}
                       </td>
                     ))}
