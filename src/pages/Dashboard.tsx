@@ -111,21 +111,41 @@ export default function Dashboard({ profile }: Props) {
       debut12.setMonth(debut12.getMonth() - 13); // 14 mois pour couvrir tout l'historique
       const debut12Iso = debut12.toISOString().slice(0, 10);
 
-      // ── 1. Ventes (sans jointure profiles) ────────────────────────────────
-      let q = supabase
-        .from("sales")
-        .select("date_vente, ca_ttc, commission_oci, univers, agence, profile_id")
-        .in("statut", ["validee", "en_attente_oci"])
-        .eq("est_avoir", false)
-        .gte("date_vente", debut12Iso)
-        .order("date_vente", { ascending: true })
-        .limit(5000);
+      // ── 1. Ventes — pagination obligatoire ────────────────────────────────
+      // PostgREST plafonne les réponses à 1000 lignes côté serveur : .limit()
+      // ne suffit pas. On pagine par blocs de 1000 avec .range() jusqu'à ce
+      // qu'une page revienne incomplète. Sans ça les mois les plus récents
+      // étaient silencieusement tronqués (tri croissant = fin coupée).
+      const TAILLE_PAGE = 1000;
+      const ventesData: any[] = [];
+      let page = 0;
+      let errVentes: { message: string } | null = null;
 
-      if (profile.role === "commercial") {
-        q = q.eq("profile_id", profile.id);
+      while (true) {
+        let q = supabase
+          .from("sales")
+          .select("date_vente, ca_ttc, commission_oci, univers, agence, profile_id")
+          .in("statut", ["validee", "en_attente_oci"])
+          .eq("est_avoir", false)
+          .gte("date_vente", debut12Iso)
+          .order("date_vente", { ascending: true })
+          .range(page * TAILLE_PAGE, (page + 1) * TAILLE_PAGE - 1);
+
+        if (profile.role === "commercial") {
+          q = q.eq("profile_id", profile.id);
+        }
+
+        const { data, error } = await q;
+
+        if (error) { errVentes = error; break; }
+        if (!data || data.length === 0) break;
+
+        ventesData.push(...data);
+        if (data.length < TAILLE_PAGE) break;
+
+        page++;
+        if (page > 50) break; // garde-fou : 50 000 lignes max
       }
-
-      const { data: ventesData, error: errVentes } = await q;
 
       if (errVentes) {
         console.error("Dashboard erreur ventes:", errVentes.message);
@@ -144,7 +164,7 @@ export default function Dashboard({ profile }: Props) {
       setNomById(map);
 
       setVentes(
-        (ventesData ?? []).map((v: any) => ({
+        ventesData.map((v: any) => ({
           ...v,
           ca_ttc: Number(v.ca_ttc) || 0,
           commission_oci: Number(v.commission_oci) || 0,
