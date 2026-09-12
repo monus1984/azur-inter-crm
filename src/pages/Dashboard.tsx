@@ -1,75 +1,63 @@
 import { useEffect, useState, useMemo } from "react";
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { supabase } from "../lib/supabase";
 import type { Profile } from "../types/database";
 
 interface Props { profile: Profile; }
 
-// ─── Constantes visuelles (héritées de l'ancien CRM) ──────────────────────────
 const C = {
-  orange: "#E85D00", orangeL: "#FF7A20", orangeDim: "rgba(232,93,0,0.10)",
-  blue: "#1A6FC4", green: "#0F9B6E", red: "#D93055", yellow: "#C98A00",
-  purple: "#6D4FC4", text: "#1A2332", muted: "#6B7C8E",
-  border: "rgba(0,0,0,0.07)", card: "#FFFFFF", bg: "#F0F2F7", nav: "#1A2E42",
+  orange: "#E85D00", blue: "#1A6FC4", green: "#0F9B6E",
+  red: "#D93055", yellow: "#C98A00", purple: "#6D4FC4",
+  text: "#1A2332", muted: "#6B7C8E",
 };
 const UNIVERS_COLORS: Record<string, string> = {
   INTERNET: C.blue, MOBILE: C.orange, ICT: C.purple,
   FIXE: C.green, AUTRES: C.muted,
 };
 const AGENCE_COLORS = [C.orange, C.blue, C.green, C.purple, C.yellow, C.red];
-
-// Objectifs mensuels équipe T4 2026 (OCI officiels)
-const OBJECTIF_EQUIPE: Record<string, number> = {
-  INTERNET: 3000000, MOBILE: 7500000, ICT: 1500000, FIXE: 300000, TOTAL: 12300000,
+const OBJECTIF_EQUIPE_TOTAL = 12300000;
+const OBJECTIF_UNIVERS: Record<string, number> = {
+  INTERNET: 3000000, MOBILE: 7500000, ICT: 1500000, FIXE: 300000,
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt = (n: number) =>
-  n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1000 ? (n / 1000).toFixed(0) + "K" : String(Math.round(n));
+  n >= 1e6 ? (n / 1e6).toFixed(1) + "M" :
+  n >= 1000 ? (n / 1000).toFixed(0) + "K" :
+  String(Math.round(n));
 const fmtN = (n: number) => new Intl.NumberFormat("fr-FR").format(Math.round(n));
 const moisLabel = (iso: string) => {
   const [y, m] = iso.split("-");
   return new Date(+y, +m - 1, 1).toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
 };
 
-// ─── Types internes ────────────────────────────────────────────────────────────
-interface VenteBrute {
+interface VenteRow {
   date_vente: string;
   ca_ttc: number;
   commission_oci: number;
   univers: string;
   agence: string | null;
   profile_id: string | null;
-  nom_commercial?: string;
 }
 
-interface KpiUnivers { name: string; ca: number; comm: number; nb: number; color: string; }
-interface KpiAgence  { name: string; ca: number; comm: number; nb: number; }
-interface KpiAgent   { name: string; ca: number; comm: number; nb: number; }
-interface LigneMois  { mois: string; label: string; ca: number; comm: number; nb: number; }
-
-// ─── Sous-composants ──────────────────────────────────────────────────────────
 function KpiCard({ label, value, sub, color = C.orange, dark = false }: {
   label: string; value: string | number; sub?: string; color?: string; dark?: boolean;
 }) {
   return (
-    <div className={`rounded-xl p-4 flex flex-col gap-1 ${dark ? "bg-slate-900 text-white" : "bg-white border border-slate-200"}`}>
-      <div className={`text-xs ${dark ? "text-slate-400" : "text-slate-500"}`}>{label}</div>
-      <div className={`text-xl font-semibold ${dark ? "text-white" : "text-slate-900"}`} style={dark ? {} : { color }}>
+    <div className={`rounded-xl p-4 ${dark ? "bg-slate-900 text-white" : "bg-white border border-slate-200"}`}>
+      <div className={`text-xs mb-1 ${dark ? "text-slate-400" : "text-slate-500"}`}>{label}</div>
+      <div className={`text-xl font-semibold ${dark ? "text-white" : ""}`} style={dark ? {} : { color }}>
         {value}
       </div>
-      {sub && <div className={`text-xs ${dark ? "text-slate-400" : "text-slate-400"}`}>{sub}</div>}
+      {sub && <div className={`text-xs mt-0.5 ${dark ? "text-slate-400" : "text-slate-400"}`}>{sub}</div>}
     </div>
   );
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">{children}</div>
-  );
+  return <div className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">{children}</div>;
 }
 
 function TooltipCA({ active, payload, label }: any) {
@@ -86,13 +74,12 @@ function TooltipCA({ active, payload, label }: any) {
   );
 }
 
-// ─── Composant principal ──────────────────────────────────────────────────────
 export default function Dashboard({ profile }: Props) {
-  const [ventes, setVentes] = useState<VenteBrute[]>([]);
+  const [ventes, setVentes] = useState<VenteRow[]>([]);
+  const [nomById, setNomById] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
-  const [moisOffset, setMoisOffset] = useState(0); // 0 = mois courant
+  const [moisOffset, setMoisOffset] = useState(0);
 
-  // Période sélectionnée
   const periodeDebut = useMemo(() => {
     const d = new Date();
     d.setDate(1);
@@ -107,101 +94,120 @@ export default function Dashboard({ profile }: Props) {
     return d.toISOString().slice(0, 10);
   }, [moisOffset]);
 
-  const periodeLabel = useMemo(() => {
-    return new Date(periodeDebut).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
-  }, [periodeDebut]);
+  const periodeLabel = useMemo(() =>
+    new Date(periodeDebut).toLocaleDateString("fr-FR", { month: "long", year: "numeric" }),
+    [periodeDebut]
+  );
 
-  // Chargement ventes — 12 mois glissants pour l'historique
   useEffect(() => {
     async function charger() {
       setLoading(true);
+
+      // Date début : 12 mois glissants
       const debut12 = new Date();
       debut12.setDate(1);
       debut12.setMonth(debut12.getMonth() - 11);
+      const debut12Iso = debut12.toISOString().slice(0, 10);
 
-      let query = supabase
+      // ── 1. Ventes (sans jointure profiles) ────────────────────────────────
+      let q = supabase
         .from("sales")
-        .select(`
-          date_vente, ca_ttc, commission_oci, univers, agence, profile_id,
-          profiles ( nom )
-        `)
+        .select("date_vente, ca_ttc, commission_oci, univers, agence, profile_id")
         .in("statut", ["validee", "en_attente_oci"])
         .eq("est_avoir", false)
-        .gte("date_vente", debut12.toISOString().slice(0, 10))
+        .gte("date_vente", debut12Iso)
         .order("date_vente", { ascending: true });
 
-      // Filtre commercial — ne voit que ses propres ventes
       if (profile.role === "commercial") {
-        query = query.eq("profile_id", profile.id);
+        q = q.eq("profile_id", profile.id);
       }
 
-      const { data } = await query;
-      const rows = (data ?? []).map((v: any) => ({
-        ...v,
-        ca_ttc: v.ca_ttc || 0,
-        commission_oci: v.commission_oci || 0,
-        nom_commercial: v.profiles?.nom ?? "—",
-      }));
-      setVentes(rows);
+      const { data: ventesData, error: errVentes } = await q;
+
+      if (errVentes) {
+        console.error("Dashboard erreur ventes:", errVentes.message);
+        setLoading(false);
+        return;
+      }
+
+      // ── 2. Profils (requête séparée) ───────────────────────────────────────
+      const { data: profils } = await supabase
+        .from("profiles")
+        .select("id, nom")
+        .eq("actif", true);
+
+      const map = new Map<string, string>();
+      (profils ?? []).forEach((p: { id: string; nom: string }) => map.set(p.id, p.nom));
+      setNomById(map);
+
+      setVentes(
+        (ventesData ?? []).map((v: any) => ({
+          ...v,
+          ca_ttc: Number(v.ca_ttc) || 0,
+          commission_oci: Number(v.commission_oci) || 0,
+        }))
+      );
       setLoading(false);
     }
     charger();
   }, [profile.id, profile.role]);
 
-  // ── Ventes de la période sélectionnée ──────────────────────────────────────
+  // ── Ventes de la période ───────────────────────────────────────────────────
   const ventesPeriode = useMemo(
     () => ventes.filter(v => v.date_vente >= periodeDebut && v.date_vente < periodeFin),
     [ventes, periodeDebut, periodeFin]
   );
 
-  // ── KPIs globaux ────────────────────────────────────────────────────────────
   const totalCA   = ventesPeriode.reduce((s, v) => s + v.ca_ttc, 0);
   const totalComm = ventesPeriode.reduce((s, v) => s + v.commission_oci, 0);
   const nbVentes  = ventesPeriode.length;
-  const tauxObj   = OBJECTIF_EQUIPE.TOTAL > 0 ? Math.round((totalCA / OBJECTIF_EQUIPE.TOTAL) * 100) : 0;
+  const tauxObj   = OBJECTIF_EQUIPE_TOTAL > 0 ? Math.round((totalCA / OBJECTIF_EQUIPE_TOTAL) * 100) : 0;
 
-  // ── Par univers ─────────────────────────────────────────────────────────────
-  const byUnivers = useMemo<KpiUnivers[]>(() => {
-    const map: Record<string, KpiUnivers> = {};
+  // ── Agrégats ───────────────────────────────────────────────────────────────
+  const byUnivers = useMemo(() => {
+    const map: Record<string, { ca: number; comm: number; nb: number }> = {};
     ventesPeriode.forEach(v => {
       const u = v.univers || "AUTRES";
-      if (!map[u]) map[u] = { name: u, ca: 0, comm: 0, nb: 0, color: UNIVERS_COLORS[u] || C.muted };
+      if (!map[u]) map[u] = { ca: 0, comm: 0, nb: 0 };
       map[u].ca += v.ca_ttc;
       map[u].comm += v.commission_oci;
       map[u].nb += 1;
     });
-    return Object.values(map).sort((a, b) => b.ca - a.ca);
+    return Object.entries(map)
+      .map(([name, d]) => ({ name, ...d, color: UNIVERS_COLORS[name] || C.muted }))
+      .sort((a, b) => b.ca - a.ca);
   }, [ventesPeriode]);
 
-  // ── Par agence ──────────────────────────────────────────────────────────────
-  const byAgence = useMemo<KpiAgence[]>(() => {
-    const map: Record<string, KpiAgence> = {};
+  const byAgence = useMemo(() => {
+    const map: Record<string, { ca: number; comm: number; nb: number }> = {};
     ventesPeriode.forEach(v => {
       const a = v.agence || "Non assignée";
-      if (!map[a]) map[a] = { name: a, ca: 0, comm: 0, nb: 0 };
+      if (!map[a]) map[a] = { ca: 0, comm: 0, nb: 0 };
       map[a].ca += v.ca_ttc;
       map[a].comm += v.commission_oci;
       map[a].nb += 1;
     });
-    return Object.values(map).sort((a, b) => b.ca - a.ca);
+    return Object.entries(map)
+      .map(([name, d]) => ({ name, ...d }))
+      .sort((a, b) => b.ca - a.ca);
   }, [ventesPeriode]);
 
-  // ── Par commercial ──────────────────────────────────────────────────────────
-  const byAgent = useMemo<KpiAgent[]>(() => {
-    const map: Record<string, KpiAgent> = {};
+  const byAgent = useMemo(() => {
+    const map: Record<string, { nom: string; ca: number; comm: number; nb: number }> = {};
     ventesPeriode.forEach(v => {
-      const nom = v.nom_commercial || "—";
-      if (!map[nom]) map[nom] = { name: nom.split(" ")[0], ca: 0, comm: 0, nb: 0 };
-      map[nom].ca += v.ca_ttc;
-      map[nom].comm += v.commission_oci;
-      map[nom].nb += 1;
+      const pid = v.profile_id || "?";
+      const nom = nomById.get(pid) || "NON IDENTIFIÉ";
+      const key = pid;
+      if (!map[key]) map[key] = { nom: nom.split(" ")[0], ca: 0, comm: 0, nb: 0 };
+      map[key].ca += v.ca_ttc;
+      map[key].comm += v.commission_oci;
+      map[key].nb += 1;
     });
     return Object.values(map).sort((a, b) => b.ca - a.ca).slice(0, 10);
-  }, [ventesPeriode]);
+  }, [ventesPeriode, nomById]);
 
-  // ── Historique 12 mois ──────────────────────────────────────────────────────
-  const historique = useMemo<LigneMois[]>(() => {
-    const map: Record<string, LigneMois> = {};
+  const historique = useMemo(() => {
+    const map: Record<string, { mois: string; label: string; ca: number; comm: number; nb: number }> = {};
     ventes.forEach(v => {
       const m = v.date_vente.slice(0, 7);
       if (!map[m]) map[m] = { mois: m, label: moisLabel(m), ca: 0, comm: 0, nb: 0 };
@@ -212,16 +218,25 @@ export default function Dashboard({ profile }: Props) {
     return Object.values(map).sort((a, b) => a.mois.localeCompare(b.mois));
   }, [ventes]);
 
-  if (loading) {
-    return <div className="p-8 text-sm text-slate-400">Chargement...</div>;
-  }
-
   const isAdmin = ["admin", "dg"].includes(profile.role);
+
+  if (loading) return <div className="p-8 text-sm text-slate-400">Chargement...</div>;
+
+  if (ventes.length === 0) {
+    return (
+      <div className="p-8">
+        <div className="text-sm text-slate-500 bg-amber-50 border border-amber-100 rounded-lg p-4 max-w-md">
+          <p className="font-medium text-amber-700 mb-1">Aucune donnée disponible</p>
+          <p>Vérifiez que des ventes avec statut <code className="bg-amber-100 px-1 rounded">validee</code> ou <code className="bg-amber-100 px-1 rounded">en_attente_oci</code> existent pour votre compte.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 max-w-5xl space-y-6">
 
-      {/* ── En-tête + sélecteur de mois ─────────────────────────────────── */}
+      {/* En-tête + sélecteur mois */}
       <div className="flex items-end justify-between flex-wrap gap-3">
         <div>
           <p className="text-xs text-slate-400 uppercase tracking-wide mb-0.5 capitalize">{periodeLabel}</p>
@@ -233,36 +248,35 @@ export default function Dashboard({ profile }: Props) {
           </h1>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setMoisOffset(o => o + 1)}
-            className="px-3 py-1.5 text-xs border border-slate-200 rounded-md text-slate-600 hover:bg-slate-50"
-          >← mois préc.</button>
+          <button onClick={() => setMoisOffset(o => o + 1)}
+            className="px-3 py-1.5 text-xs border border-slate-200 rounded-md text-slate-600 hover:bg-slate-50">
+            ← mois préc.
+          </button>
           <span className="text-xs font-medium text-slate-700 px-2 capitalize">{periodeLabel}</span>
-          <button
-            onClick={() => setMoisOffset(o => Math.max(0, o - 1))}
+          <button onClick={() => setMoisOffset(o => Math.max(0, o - 1))}
             disabled={moisOffset === 0}
-            className="px-3 py-1.5 text-xs border border-slate-200 rounded-md text-slate-600 hover:bg-slate-50 disabled:opacity-40"
-          >mois suiv. →</button>
+            className="px-3 py-1.5 text-xs border border-slate-200 rounded-md text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+            mois suiv. →
+          </button>
         </div>
       </div>
 
-      {/* ── KPIs ────────────────────────────────────────────────────────── */}
+      {/* KPIs */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <KpiCard label="CA TTC" value={fmt(totalCA) + " F"} sub={`HT ≈ ${fmt(Math.round(totalCA / 1.18))} F`} dark />
-        <KpiCard label="Commission OCI" value={fmt(totalComm) + " F"} sub={`${nbVentes} vente(s)`} color={C.blue} />
-        <KpiCard
-          label="Objectif équipe"
+        <KpiCard label="CA TTC" value={fmt(totalCA) + " F"}
+          sub={`HT ≈ ${fmt(Math.round(totalCA / 1.18))} F`} dark />
+        <KpiCard label="Commission OCI" value={fmt(totalComm) + " F"}
+          sub={`${nbVentes} vente(s)`} color={C.blue} />
+        <KpiCard label="Objectif équipe"
           value={tauxObj + "%"}
-          sub={`/ ${fmt(OBJECTIF_EQUIPE.TOTAL)} F`}
-          color={tauxObj >= 100 ? C.green : tauxObj >= 70 ? C.yellow : C.red}
-        />
-        <KpiCard label="Univers actifs" value={byUnivers.length} sub={byUnivers.map(u => u.name).join(" · ")} color={C.purple} />
+          sub={`/ ${fmt(OBJECTIF_EQUIPE_TOTAL)} F`}
+          color={tauxObj >= 100 ? C.green : tauxObj >= 70 ? C.yellow : C.red} />
+        <KpiCard label="Univers actifs" value={byUnivers.length}
+          sub={byUnivers.map(u => u.name).join(" · ")} color={C.purple} />
       </div>
 
-      {/* ── Graphe évolution + Répartition univers ───────────────────────── */}
+      {/* Graphe + Univers */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-        {/* Évolution 12 mois */}
         <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5">
           <SectionTitle>Évolution CA mensuel</SectionTitle>
           <ResponsiveContainer width="100%" height={220}>
@@ -282,15 +296,12 @@ export default function Dashboard({ profile }: Props) {
               <YAxis tick={{ fill: C.muted, fontSize: 10 }} tickLine={false} axisLine={false}
                 tickFormatter={v => fmt(v)} width={48} />
               <Tooltip content={<TooltipCA />} />
-              <Area type="monotone" dataKey="ca" name="CA TTC"
-                stroke={C.orange} strokeWidth={2} fill="url(#gCA)" />
-              <Area type="monotone" dataKey="comm" name="Commission OCI"
-                stroke={C.blue} strokeWidth={1.5} fill="url(#gComm)" />
+              <Area type="monotone" dataKey="ca" name="CA TTC" stroke={C.orange} strokeWidth={2} fill="url(#gCA)" />
+              <Area type="monotone" dataKey="comm" name="Commission OCI" stroke={C.blue} strokeWidth={1.5} fill="url(#gComm)" />
             </AreaChart>
           </ResponsiveContainer>
         </div>
 
-        {/* Répartition univers */}
         <div className="bg-white border border-slate-200 rounded-xl p-5">
           <SectionTitle>Répartition univers</SectionTitle>
           <ResponsiveContainer width="100%" height={160}>
@@ -312,11 +323,9 @@ export default function Dashboard({ profile }: Props) {
                 </div>
                 <div className="text-right">
                   <span className="font-semibold text-slate-800">{fmt(u.ca)} F</span>
-                  {isAdmin && (
+                  {isAdmin && OBJECTIF_UNIVERS[u.name] && (
                     <span className="text-slate-400 ml-1">
-                      ({OBJECTIF_EQUIPE[u.name]
-                        ? Math.round((u.ca / OBJECTIF_EQUIPE[u.name]) * 100) + "%"
-                        : "—"})
+                      ({Math.round((u.ca / OBJECTIF_UNIVERS[u.name]) * 100)}%)
                     </span>
                   )}
                 </div>
@@ -326,69 +335,61 @@ export default function Dashboard({ profile }: Props) {
         </div>
       </div>
 
-      {/* ── Top commerciaux + CA agences ──────────────────────────────────── */}
+      {/* Commerciaux + Agences (admin/DG uniquement) */}
       {isAdmin && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-          {/* Commerciaux */}
           <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5">
             <SectionTitle>CA &amp; Commissions par commercial</SectionTitle>
             <ResponsiveContainer width="100%" height={Math.max(180, byAgent.length * 34)}>
-              <BarChart data={byAgent} layout="vertical" margin={{ left: 70, right: 12 }}>
+              <BarChart data={byAgent} layout="vertical" margin={{ left: 75, right: 12 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" horizontal={false} />
                 <XAxis type="number" tick={{ fill: C.muted, fontSize: 9 }} tickLine={false}
                   axisLine={false} tickFormatter={v => fmt(v)} />
-                <YAxis type="category" dataKey="name" tick={{ fill: C.text, fontSize: 10 }}
-                  tickLine={false} axisLine={false} width={70} />
+                <YAxis type="category" dataKey="nom" tick={{ fill: C.text, fontSize: 10 }}
+                  tickLine={false} axisLine={false} width={75} />
                 <Tooltip content={<TooltipCA />} />
                 <Bar dataKey="ca" name="CA TTC" fill={C.orange} radius={[0, 3, 3, 0]} />
-                <Bar dataKey="comm" name="Commission" fill={C.blue} fillOpacity={0.7}
-                  radius={[0, 3, 3, 0]} />
+                <Bar dataKey="comm" name="Commission" fill={C.blue} fillOpacity={0.7} radius={[0, 3, 3, 0]} />
               </BarChart>
             </ResponsiveContainer>
             {/* Tableau synthétique */}
-            <div className="mt-4 pt-3 border-t border-slate-100">
-              <div className="grid text-xs" style={{ gridTemplateColumns: "1fr auto auto auto" }}>
-                <span className="text-slate-400 font-bold uppercase tracking-wide text-[10px]">Commercial</span>
-                <span className="text-slate-400 font-bold uppercase tracking-wide text-[10px] text-right pr-3">Ventes</span>
-                <span className="text-slate-400 font-bold uppercase tracking-wide text-[10px] text-right pr-3">CA TTC</span>
-                <span className="text-slate-400 font-bold uppercase tracking-wide text-[10px] text-right">Commission</span>
+            <div className="mt-4 pt-3 border-t border-slate-100 text-xs">
+              <div className="grid gap-x-4" style={{ gridTemplateColumns: "1fr auto auto auto" }}>
+                {["Commercial","Ventes","CA TTC","Commission"].map(h => (
+                  <span key={h} className="text-slate-400 font-bold uppercase tracking-wide text-[10px] pb-1 text-right first:text-left">{h}</span>
+                ))}
                 {byAgent.map((a, i) => (
                   <>
-                    <div key={`n${i}`} className="py-1.5 border-t border-slate-50 text-slate-700 font-medium">{a.name}</div>
-                    <div key={`v${i}`} className="py-1.5 border-t border-slate-50 text-slate-400 text-right pr-3">{a.nb}</div>
-                    <div key={`c${i}`} className="py-1.5 border-t border-slate-50 text-right pr-3 font-semibold" style={{ color: C.orange }}>{fmt(a.ca)} F</div>
+                    <div key={`n${i}`} className="py-1.5 border-t border-slate-50 text-slate-700 font-medium">{a.nom}</div>
+                    <div key={`v${i}`} className="py-1.5 border-t border-slate-50 text-slate-400 text-right">{a.nb}</div>
+                    <div key={`c${i}`} className="py-1.5 border-t border-slate-50 text-right font-semibold" style={{ color: C.orange }}>{fmt(a.ca)} F</div>
                     <div key={`o${i}`} className="py-1.5 border-t border-slate-50 text-right font-bold" style={{ color: C.blue }}>{fmt(a.comm)} F</div>
                   </>
                 ))}
-                <div className="py-2 border-t-2 border-slate-200 text-slate-900 font-bold text-[11px]">TOTAL</div>
-                <div className="py-2 border-t-2 border-slate-200 text-right pr-3 text-slate-500 font-semibold">{byAgent.reduce((s, a) => s + a.nb, 0)}</div>
-                <div className="py-2 border-t-2 border-slate-200 text-right pr-3 font-bold text-[11px]" style={{ color: C.orange }}>{fmt(byAgent.reduce((s, a) => s + a.ca, 0))} F</div>
-                <div className="py-2 border-t-2 border-slate-200 text-right font-bold text-[11px]" style={{ color: C.blue }}>{fmt(byAgent.reduce((s, a) => s + a.comm, 0))} F</div>
+                <div className="py-2 border-t-2 border-slate-200 font-bold text-[11px]">TOTAL</div>
+                <div className="py-2 border-t-2 border-slate-200 text-right text-slate-500 font-semibold">{byAgent.reduce((s,a)=>s+a.nb,0)}</div>
+                <div className="py-2 border-t-2 border-slate-200 text-right font-bold text-[11px]" style={{ color: C.orange }}>{fmt(byAgent.reduce((s,a)=>s+a.ca,0))} F</div>
+                <div className="py-2 border-t-2 border-slate-200 text-right font-bold text-[11px]" style={{ color: C.blue }}>{fmt(byAgent.reduce((s,a)=>s+a.comm,0))} F</div>
               </div>
             </div>
           </div>
 
-          {/* CA par agence */}
           <div className="bg-white border border-slate-200 rounded-xl p-5">
             <SectionTitle>CA par agence</SectionTitle>
             <div className="space-y-4">
               {byAgence.map((a, i) => (
                 <div key={a.name}>
                   <div className="flex justify-between mb-1">
-                    <span className="text-xs font-medium text-slate-700 truncate max-w-[120px]" title={a.name}>
+                    <span className="text-xs font-medium text-slate-700 truncate max-w-[130px]" title={a.name}>
                       {a.name.replace("Angré ", "")}
                     </span>
                     <span className="text-xs font-bold" style={{ color: C.orange }}>{fmt(a.ca)} F</span>
                   </div>
                   <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full rounded-full"
-                      style={{
-                        width: `${totalCA > 0 ? Math.round((a.ca / totalCA) * 100) : 0}%`,
-                        background: AGENCE_COLORS[i % AGENCE_COLORS.length],
-                      }}
-                    />
+                    <div className="h-full rounded-full" style={{
+                      width: `${totalCA > 0 ? Math.round((a.ca / totalCA) * 100) : 0}%`,
+                      background: AGENCE_COLORS[i % AGENCE_COLORS.length],
+                    }} />
                   </div>
                   <div className="flex justify-between mt-0.5 text-[10px] text-slate-400">
                     <span>{a.nb} vente(s)</span>
@@ -401,7 +402,7 @@ export default function Dashboard({ profile }: Props) {
         </div>
       )}
 
-      {/* ── Tableau historique par mois ────────────────────────────────────── */}
+      {/* Historique */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-100">
           <h2 className="text-sm font-medium text-slate-900">Historique mensuel</h2>
@@ -418,7 +419,7 @@ export default function Dashboard({ profile }: Props) {
           </thead>
           <tbody>
             {[...historique].reverse().map((h, i) => {
-              const objPct = Math.round((h.ca / OBJECTIF_EQUIPE.TOTAL) * 100);
+              const objPct = Math.round((h.ca / OBJECTIF_EQUIPE_TOTAL) * 100);
               const isCourant = h.mois === periodeDebut.slice(0, 7);
               return (
                 <tr key={h.mois} className={`border-b border-slate-50 ${isCourant ? "bg-orange-50" : ""}`}>
@@ -427,12 +428,8 @@ export default function Dashboard({ profile }: Props) {
                     {isCourant && <span className="ml-2 text-xs text-orange-400">(en cours)</span>}
                   </td>
                   <td className="px-5 py-2.5 text-slate-500 text-right">{h.nb}</td>
-                  <td className="px-5 py-2.5 text-right font-semibold text-slate-900">
-                    {fmtN(h.ca)} F
-                  </td>
-                  <td className="px-5 py-2.5 text-right text-slate-600">
-                    {fmtN(h.comm)} F
-                  </td>
+                  <td className="px-5 py-2.5 text-right font-semibold text-slate-900">{fmtN(h.ca)} F</td>
+                  <td className="px-5 py-2.5 text-right text-slate-600">{fmtN(h.comm)} F</td>
                   {isAdmin && (
                     <td className="px-5 py-2.5 text-right">
                       <span className={`text-xs font-bold ${objPct >= 100 ? "text-green-600" : objPct >= 70 ? "text-amber-500" : "text-red-400"}`}>
