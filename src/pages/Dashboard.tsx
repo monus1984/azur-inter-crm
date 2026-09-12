@@ -118,7 +118,8 @@ export default function Dashboard({ profile }: Props) {
         .in("statut", ["validee", "en_attente_oci"])
         .eq("est_avoir", false)
         .gte("date_vente", debut12Iso)
-        .order("date_vente", { ascending: true });
+        .order("date_vente", { ascending: true })
+        .limit(5000);
 
       if (profile.role === "commercial") {
         q = q.eq("profile_id", profile.id);
