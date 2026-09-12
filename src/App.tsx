@@ -14,6 +14,7 @@ import Pnl from "./pages/Pnl";
 import QualiteDonnees from "./pages/QualiteDonnees";
 import Reconciliation from "./pages/Reconciliation";
 import type { Profile } from "./types/database";
+import { OcrProvider } from "./OcrContext";
 
 function NavItem({ to, label }: { to: string; label: string }) {
   return (
@@ -99,6 +100,7 @@ export default function App() {
   const peutSaisirOuImporter = profile.role === "admin" || profile.role === "commercial";
 
   return (
+    <OcrProvider>
     <BrowserRouter>
       <Shell profile={profile}>
         <Routes>
@@ -164,5 +166,6 @@ export default function App() {
         </Routes>
       </Shell>
     </BrowserRouter>
+    </OcrProvider>
   );
 }
