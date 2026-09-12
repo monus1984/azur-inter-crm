@@ -78,7 +78,9 @@ export default function Dashboard({ profile }: Props) {
   const [ventes, setVentes] = useState<VenteRow[]>([]);
   const [nomById, setNomById] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
-  const [moisOffset, setMoisOffset] = useState(0);
+  // Démarrer sur le dernier mois avec données (août 2026)
+  // Septembre 2026 est en cours et peut être vide — on bascule automatiquement
+  const [moisOffset, setMoisOffset] = useState(1);
 
   const periodeDebut = useMemo(() => {
     const d = new Date();
@@ -106,7 +108,7 @@ export default function Dashboard({ profile }: Props) {
       // Date début : 12 mois glissants
       const debut12 = new Date();
       debut12.setDate(1);
-      debut12.setMonth(debut12.getMonth() - 11);
+      debut12.setMonth(debut12.getMonth() - 13); // 14 mois pour couvrir tout l'historique
       const debut12Iso = debut12.toISOString().slice(0, 10);
 
       // ── 1. Ventes (sans jointure profiles) ────────────────────────────────
@@ -222,16 +224,7 @@ export default function Dashboard({ profile }: Props) {
 
   if (loading) return <div className="p-8 text-sm text-slate-400">Chargement...</div>;
 
-  if (ventes.length === 0) {
-    return (
-      <div className="p-8">
-        <div className="text-sm text-slate-500 bg-amber-50 border border-amber-100 rounded-lg p-4 max-w-md">
-          <p className="font-medium text-amber-700 mb-1">Aucune donnée disponible</p>
-          <p>Vérifiez que des ventes avec statut <code className="bg-amber-100 px-1 rounded">validee</code> ou <code className="bg-amber-100 px-1 rounded">en_attente_oci</code> existent pour votre compte.</p>
-        </div>
-      </div>
-    );
-  }
+  // Ne pas bloquer le rendu si le mois sélectionné est vide — l'historique reste visible
 
   return (
     <div className="p-6 max-w-5xl space-y-6">
@@ -262,17 +255,22 @@ export default function Dashboard({ profile }: Props) {
       </div>
 
       {/* KPIs */}
+      {nbVentes === 0 && ventes.length > 0 && (
+        <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-sm text-slate-500">
+          Aucune vente pour <span className="font-medium capitalize">{periodeLabel}</span> — navigue vers un mois précédent pour voir les données.
+        </div>
+      )}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <KpiCard label="CA TTC" value={fmt(totalCA) + " F"}
-          sub={`HT ≈ ${fmt(Math.round(totalCA / 1.18))} F`} dark />
-        <KpiCard label="Commission OCI" value={fmt(totalComm) + " F"}
+        <KpiCard label="CA TTC" value={nbVentes > 0 ? fmt(totalCA) + " F" : "—"}
+          sub={nbVentes > 0 ? `HT ≈ ${fmt(Math.round(totalCA / 1.18))} F` : periodeLabel} dark />
+        <KpiCard label="Commission OCI" value={nbVentes > 0 ? fmt(totalComm) + " F" : "—"}
           sub={`${nbVentes} vente(s)`} color={C.blue} />
         <KpiCard label="Objectif équipe"
-          value={tauxObj + "%"}
+          value={nbVentes > 0 ? tauxObj + "%" : "—"}
           sub={`/ ${fmt(OBJECTIF_EQUIPE_TOTAL)} F`}
           color={tauxObj >= 100 ? C.green : tauxObj >= 70 ? C.yellow : C.red} />
-        <KpiCard label="Univers actifs" value={byUnivers.length}
-          sub={byUnivers.map(u => u.name).join(" · ")} color={C.purple} />
+        <KpiCard label="Univers actifs" value={byUnivers.length || "—"}
+          sub={byUnivers.length > 0 ? byUnivers.map(u => u.name).join(" · ") : "aucune vente ce mois"} color={C.purple} />
       </div>
 
       {/* Graphe + Univers */}
