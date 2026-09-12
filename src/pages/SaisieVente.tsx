@@ -126,7 +126,7 @@ export default function SaisieVente({ profile, onSuccess }: Props) {
       prime: 0,
       n_facture: nFacture || null,
       n_client: nClient || null,
-      statut: "saisie",
+      statut: "en_attente_oci",
       est_avoir: false,
       cree_par: profile.id,
     });
@@ -302,7 +302,7 @@ export default function SaisieVente({ profile, onSuccess }: Props) {
 
         {success && (
           <p className="text-sm text-green-600" role="status">
-            Vente enregistrée. En attente de validation.
+            Vente enregistrée avec succès.
           </p>
         )}
 
